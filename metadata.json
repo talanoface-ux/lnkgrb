@@ -1,0 +1,6 @@
+{
+  "name": "Drive Video Zipper",
+  "description": "Download videos from links, zip them, and upload directly to your Google Drive with one click.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
