@@ -14,10 +14,10 @@
   "dependencies": {
     "@google/genai": "^1.29.0",
     "@tailwindcss/vite": "^4.1.14",
-    "@types/archiver": "^7.0.0",
+    "@types/archiver": "^5.3.1",
     "@types/multer": "^2.1.0",
     "@vitejs/plugin-react": "^5.0.4",
-    "archiver": "^7.0.1",
+    "archiver": "^5.3.1",
     "archiver-zip-encryptable": "^1.0.10",
     "axios": "^1.15.2",
     "cheerio": "^1.2.0",

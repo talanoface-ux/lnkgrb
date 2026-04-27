@@ -62,8 +62,45 @@ async function extractVideoUrl(pageUrl: string): Promise<{ url: string, filename
         'Cookie': isPornhub ? 'accessAgeDisclaimerPH=1; age_verified=1; accessPH=1; content_filter=0; platform=pc; bs=1; expired_notice_PH=1; cookie_free_porn=1; atatus_checker=1; invite_survey_seen=1; hide_survey=1; cookiesBannerSeen=1; has_access=1; access_verified=1; welcome_PH=1; d_id=1; il=1; has_access=1;' : ''
       };
 
-      const response = await axios.get(finalUrl, { headers, timeout: 20000 });
-      const html = String(response.data);
+      const response = await axios.get(finalUrl, { 
+        headers, 
+        timeout: 15000, // Reduced timeout
+        responseType: 'stream',
+        validateStatus: () => true // Don't throw for 404/403 to handle them gracefully
+      });
+
+      const statusCode = response.status;
+      const contentType = String(response.headers['content-type'] || '').toLowerCase();
+      
+      console.log(`Mirror status: ${statusCode}, Type: ${contentType}`);
+
+      if (statusCode >= 400) {
+        console.warn(`Mirror returned error status: ${statusCode}`);
+        response.data.destroy();
+        continue;
+      }
+
+      if (!contentType.includes('text/html') && !contentType.includes('application/xhtml+xml')) {
+        console.log('Skipping extraction as target is not an HTML page:', contentType);
+        response.data.destroy();
+        // If it's already a video, just return it
+        if (contentType.includes('video/')) {
+          return { url: finalUrl, filename: 'video.mp4' };
+        }
+        continue; // Try next mirror
+      }
+
+      // Read only up to 2MB of HTML content
+      let html = '';
+      let bytesRead = 0;
+      for await (const chunk of response.data) {
+        bytesRead += chunk.length;
+        html += chunk.toString();
+        if (bytesRead > 2 * 1024 * 1024) {
+          response.data.destroy();
+          break;
+        }
+      }
 
       const $ = cheerio.load(html);
       let videoUrl = '';
@@ -241,8 +278,12 @@ app.post('/api/process-video', async (req, res) => {
       jobs.set(jobId, { ...jobs.get(jobId)!, progress: 20, message: 'Analyzing source...' });
 
       // 1. Check if we need to extract
-      const isDirectMedia = lowerUrl.match(/\.(mp4|webm|mkv|avi|mov|m3u8)(?:\?|$)/) || (isPornhubDomain && lowerUrl.includes('phncdn.com')) || (isYoutubeDomain && lowerUrl.includes('googlevideo.com'));
-      const needsExtraction = !isDirectMedia || lowerUrl.includes('view_video.php') || lowerUrl.includes('/watch?v=') || (isPornhubDomain && !lowerUrl.includes('phncdn.com') && !lowerUrl.includes('.mp4'));
+      const isDirectMedia = lowerUrl.match(/\.(mp4|webm|mkv|avi|mov|m3u8)(?:\?|$)/) || 
+                            lowerUrl.includes('/video?token=') || // Proxy/Downloader links
+                            (isPornhubDomain && lowerUrl.includes('phncdn.com')) || 
+                            (isYoutubeDomain && lowerUrl.includes('googlevideo.com'));
+      
+      const needsExtraction = !isDirectMedia || lowerUrl.includes('view_video.php') || lowerUrl.includes('/watch?v=');
 
       if (needsExtraction) {
         try {
@@ -275,19 +316,29 @@ app.post('/api/process-video', async (req, res) => {
       jobs.set(jobId, { ...jobs.get(jobId)!, progress: 40, message: 'Initializing ZIP transfer...' });
 
       // 2. Setup Google Drive Client
+      console.log('Setting up Drive client...');
       const auth = new google.auth.OAuth2();
       auth.setCredentials({ access_token: accessToken });
       const drive = google.drive({ version: 'v3', auth });
       
       // 3. Setup Streams
-      const zipStream = new PassThrough({ highWaterMark: 2 * 1024 * 1024 }); 
-      // Use encrypted format
+      console.log('Setting up Archive pipeline...');
+      const zipStream = new PassThrough({ highWaterMark: 1 * 1024 * 1024 }); 
+      
+      // Use encrypted format (archiver v5+)
+      // Note: archiver-zip-encryptable may have issues with archiver 7, testing with 5.3.1
       const archive = archiver('zip-encryptable' as any, { 
         zlib: { level: 0 }, // Store only (fastest)
         password: password
       } as any);
 
-      const progressTracker = new PassThrough({ highWaterMark: 2 * 1024 * 1024 });
+      // Handle archive errors early
+      archive.on('error', (err) => {
+        console.error('Archive Pipeline Error:', err);
+        jobs.set(jobId, { status: 'error', message: 'خطای فشرده‌سازی', details: err.message, progress: 0, timestamp: Date.now() });
+      });
+
+      const progressTracker = new PassThrough({ highWaterMark: 1 * 1024 * 1024 });
       let bytesProcessed = 0;
       
       progressTracker.on('data', (chunk) => {
@@ -295,34 +346,35 @@ app.post('/api/process-video', async (req, res) => {
         const mb = (bytesProcessed / 1024 / 1024).toFixed(1);
         const currentJob = jobs.get(jobId);
         if (currentJob && currentJob.status === 'loading') {
+          // If we know actual size, show percentage. If not, just MB.
+          const progressVal = actualSize > 0 
+            ? 50 + Math.min(49, (bytesProcessed / actualSize) * 49)
+            : 50 + Math.min(45, (bytesProcessed / 500000000) * 45); // Estimate based on 500MB if unknown
+
           jobs.set(jobId, { 
             ...currentJob, 
-            message: `Zipping & Transferring: ${mb}MB...`,
-            progress: 50 + Math.min(49, (bytesProcessed / (actualSize || 300000000)) * 49)
+            message: `در حال انتقال: ${mb} مگابایت...`,
+            progress: Math.floor(progressVal)
           });
         }
-      });
-
-      archive.on('error', (err) => {
-        console.error('Archive error:', err);
-        jobs.set(jobId, { status: 'error', message: 'Archiver Error', details: err.message, progress: 0, timestamp: Date.now() });
       });
 
       archive.pipe(progressTracker).pipe(zipStream);
 
       // 4. Download video as stream
-      console.log('Starting stream download...');
+      console.log('Initiating video download stream from:', finalDownloadUrl);
       
       const config: any = { 
         responseType: 'stream',
-        timeout: 0, 
+        timeout: 45000, // 45 seconds to get headers
         maxRedirects: 10,
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
           'Accept': '*/*',
           'Accept-Language': 'en-US,en;q=0.9',
           'Referer': isPornhubDomain ? 'https://www.pornhub.com/' : 'https://www.google.com/',
-        }
+        },
+        validateStatus: () => true 
       };
 
       const targetLower = finalDownloadUrl.toLowerCase();
@@ -330,18 +382,21 @@ app.post('/api/process-video', async (req, res) => {
         config.headers['Cookie'] = 'accessAgeDisclaimerPH=1; age_verified=1; accessPH=1; content_filter=0; platform=pc; bs=1; expired_notice_PH=1; cookie_free_porn=1; atatus_checker=1; invite_survey_seen=1; hide_survey=1; cookiesBannerSeen=1; has_access=1; access_verified=1; welcome_PH=1; d_id=1; il=1;';
       }
       
-      console.log('Starting stream download from:', finalDownloadUrl);
-      const videoResponse = await axios.get(finalDownloadUrl, {
-        ...config,
-        responseType: 'stream',
-        timeout: 60000 // 1 minute to start receiving
-      });
+      console.log('Axios request sent, waiting for response...');
+      const videoResponse = await axios.get(finalDownloadUrl, config);
+
+      if (videoResponse.status >= 400) {
+        console.error('Video request failed with status:', videoResponse.status);
+        jobs.set(jobId, { status: 'error', message: 'خطای منبع', details: `سایت منبع خطای ${videoResponse.status} داد.`, progress: 0, timestamp: Date.now() });
+        videoResponse.data.destroy();
+        return;
+      }
 
       const contentType = String(videoResponse.headers['content-type'] || '').toLowerCase();
       const contentDisposition = String(videoResponse.headers['content-disposition'] || '').toLowerCase();
       actualSize = parseInt(String(videoResponse.headers['content-length'] || '0'));
       
-      // Strict check: If it's HTML/XML or matches common error page patterns, it's NOT a video
+      // Strict check: If it's HTML/XML it's definitely NOT a video if we expect one
       const isHtml = contentType.includes('text/html') || contentType.includes('application/xml') || contentType.includes('text/xml');
       
       if (isHtml) {
@@ -351,28 +406,38 @@ app.post('/api/process-video', async (req, res) => {
         return;
       }
 
-      // If it's a playlist (m3u8), we can't just download it as a stream
+      // Handle HLS Playlists
       if (contentType.includes('mpegurl') || finalDownloadUrl.includes('.m3u8')) {
-        jobs.set(jobId, { status: 'error', message: 'لینک نامعتبر', details: 'این لینک یک لیست پخش (HLS) است. لطفا لینک مستقیم .mp4 را وارد کنید.', progress: 0, timestamp: Date.now() });
+        jobs.set(jobId, { status: 'error', message: 'لینک نامعتبر', details: 'این لینک یک لیست پخش (HLS) است. متاسفانه نسخه فعلی فقط از لینک‌های مستقیم mp4 پشتیبانی می‌کند.', progress: 0, timestamp: Date.now() });
         videoResponse.data.destroy();
         return;
       }
 
       jobs.set(jobId, { ...jobs.get(jobId)!, progress: 50, message: 'در حال دریافت و زیپ کردن استریم ویدیو...' });
 
-      // Detect filename from Content-Disposition if possible
+      // Detect filename
       if (contentDisposition.includes('filename=')) {
         const match = contentDisposition.match(/filename="?([^";]+)"?/);
         if (match && match[1]) {
-          const remoteName = match[1];
-          if (remoteName.endsWith('.mp4') || remoteName.endsWith('.webm') || remoteName.endsWith('.mkv')) {
+          const remoteName = decodeURIComponent(match[1]);
+          if (remoteName.match(/\.(mp4|webm|mkv|avi|mov)$/i)) {
             finalFileName = remoteName;
           }
         }
       }
 
-      // Append the stream directly
-      archive.append(videoResponse.data, { name: finalFileName });
+      console.log(`Appending stream to archive. Filename: ${finalFileName}`);
+
+      // Ensure the stream is treated as a Stream by archiver
+      const streamToAppend = videoResponse.data;
+      
+      streamToAppend.on('error', (err: any) => {
+        console.error('Input stream error:', err);
+        jobs.set(jobId, { status: 'error', message: 'قطع اتصال', details: 'ارتباط با منبع ویدیو قطع شد.', progress: 0, timestamp: Date.now() });
+        archive.abort();
+      });
+
+      archive.append(streamToAppend, { name: finalFileName });
       archive.finalize();
 
       // 5. Upload ZIP stream to Google Drive
