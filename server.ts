@@ -1,11 +1,16 @@
 import express from 'express';
-import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import axios from 'axios';
 import { google } from 'googleapis';
 import archiver from 'archiver';
 import { PassThrough } from 'stream';
 import * as cheerio from 'cheerio';
+
+// Lazy load Vite only when needed (saves startup time on Vercel)
+async function getViteServer(options: any) {
+  const { createServer } = await import('vite');
+  return createServer(options);
+}
 
 async function extractVideoUrl(pageUrl: string): Promise<{ url: string, filename: string }> {
   const isPornhub = pageUrl.includes('pornhub.com');
@@ -139,23 +144,43 @@ const jobs = new Map<string, {
   timestamp: number;
 }>();
 
-// Cleanup old jobs every hour
-setInterval(() => {
-  const now = Date.now();
-  for (const [id, job] of jobs.entries()) {
-    if (now - job.timestamp > 3600000) { // 1 hour
-      jobs.delete(id);
+// Cleanup old jobs every hour (only on persistent servers)
+if (!process.env.VERCEL) {
+  setInterval(() => {
+    const now = Date.now();
+    for (const [id, job] of jobs.entries()) {
+      if (now - job.timestamp > 3600000) { // 1 hour
+        jobs.delete(id);
+      }
     }
-  }
-}, 3600000);
+  }, 3600000);
+}
 
 const app = express();
-
 app.use(express.json());
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', message: 'Server is reachable', jobsCount: jobs.size });
+  console.log('Health check requested');
+  try {
+    const status = { 
+      status: 'ok', 
+      message: 'Server is reachable', 
+      jobsCount: jobs ? jobs.size : 0,
+      env: process.env.NODE_ENV,
+      isVercel: !!process.env.VERCEL,
+      timestamp: new Date().toISOString()
+    };
+    console.log('Health check success:', status);
+    res.json(status);
+  } catch (err: any) {
+    console.error('Health check failed:', err);
+    res.status(500).json({ 
+      error: 'Internal Server Error during health check', 
+      message: err.message,
+      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+    });
+  }
 });
 
 // Get job status API
@@ -339,7 +364,7 @@ async function startServer() {
 
   // Vite middleware for development
   if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
-    const vite = await createViteServer({
+    const vite = await getViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
     });
@@ -360,7 +385,10 @@ async function startServer() {
   }
 }
 
-startServer();
+// Only start the server listen loop and Vite dev server if NOT on Vercel
+if (!process.env.VERCEL) {
+  startServer();
+}
 
 export default app;
 
