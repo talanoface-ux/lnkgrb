@@ -3,8 +3,22 @@ import path from 'path';
 import axios from 'axios';
 import { google } from 'googleapis';
 import archiver from 'archiver';
+import zipEncryptable from 'archiver-zip-encryptable';
 import { PassThrough } from 'stream';
 import * as cheerio from 'cheerio';
+
+// Register encryption format
+archiver.registerFormat('zip-encryptable', zipEncryptable);
+
+// Helper for random passwords
+function generateSecurePassword(length = 16) {
+  const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()_+";
+  let retVal = "";
+  for (let i = 0; i < length; ++i) {
+    retVal += charset.charAt(Math.floor(Math.random() * charset.length));
+  }
+  return retVal;
+}
 
 // Lazy load Vite only when needed (saves startup time on Vercel)
 async function getViteServer(options: any) {
@@ -141,6 +155,7 @@ const jobs = new Map<string, {
   progress: number;
   details?: string;
   fileId?: string;
+  zipPassword?: string;
   timestamp: number;
 }>();
 
@@ -200,10 +215,13 @@ app.post('/api/process-video', async (req, res) => {
   }
 
   const jobId = Math.random().toString(36).substring(2, 15);
+  const password = generateSecurePassword(); 
+
   jobs.set(jobId, { 
     status: 'loading', 
     message: 'Starting process...', 
     progress: 10,
+    zipPassword: password,
     timestamp: Date.now()
   });
 
@@ -263,7 +281,11 @@ app.post('/api/process-video', async (req, res) => {
       
       // 3. Setup Streams
       const zipStream = new PassThrough({ highWaterMark: 2 * 1024 * 1024 }); 
-      const archive = archiver('zip', { zlib: { level: 0 } });
+      // Use encrypted format
+      const archive = archiver('zip-encryptable' as any, { 
+        zlib: { level: 0 }, // Store only (fastest)
+        password: password
+      } as any);
 
       const progressTracker = new PassThrough({ highWaterMark: 2 * 1024 * 1024 });
       let bytesProcessed = 0;
@@ -309,15 +331,42 @@ app.post('/api/process-video', async (req, res) => {
       }
       
       const videoResponse = await axios.get(finalDownloadUrl, config);
-      const contentType = String(videoResponse.headers['content-type'] || '');
+      const contentType = String(videoResponse.headers['content-type'] || '').toLowerCase();
+      const contentDisposition = String(videoResponse.headers['content-disposition'] || '').toLowerCase();
       actualSize = parseInt(String(videoResponse.headers['content-length'] || '0'));
       
-      if (contentType.includes('text/html')) {
-        jobs.set(jobId, { status: 'error', message: 'Content Error', details: 'The server received a HTML page instead of video.', progress: 0, timestamp: Date.now() });
+      // Strict check: If it's HTML/XML or matches common error page patterns, it's NOT a video
+      const isHtml = contentType.includes('text/html') || contentType.includes('application/xml') || contentType.includes('text/xml');
+      
+      if (isHtml) {
+        console.error('Download attempt returned HTML/XML instead of video stream.');
+        jobs.set(jobId, { status: 'error', message: 'خطای محتوا', details: 'سایت منبع به جای ویدیو، یک صفحه وب برگرداند. احتمالا لینک منقضی شده یا دسترسی مسدود است.', progress: 0, timestamp: Date.now() });
         return;
       }
 
-      jobs.set(jobId, { ...jobs.get(jobId)!, progress: 50, message: 'Transfer active...' });
+      // If it's a playlist (m3u8), we can't just download it as a stream
+      if (contentType.includes('mpegurl') || finalDownloadUrl.includes('.m3u8')) {
+        jobs.set(jobId, { status: 'error', message: 'لینک نامعتبر', details: 'این لینک یک لیست پخش (HLS) است. لطفا لینک مستقیم .mp4 را وارد کنید.', progress: 0, timestamp: Date.now() });
+        return;
+      }
+
+      // Security: If size is extremely small (e.g. < 50kb) and it's supposedly a video, it might be an error string
+      if (actualSize > 0 && actualSize < 50000) {
+         console.warn('Extremely small file size detected for video stream.');
+      }
+
+      jobs.set(jobId, { ...jobs.get(jobId)!, progress: 50, message: 'در حال انتقال داده‌ها...' });
+
+      // Detect filename from Content-Disposition if possible
+      if (contentDisposition.includes('filename=')) {
+        const match = contentDisposition.match(/filename="?([^";]+)"?/);
+        if (match && match[1]) {
+          const remoteName = match[1];
+          if (remoteName.endsWith('.mp4') || remoteName.endsWith('.webm')) {
+            finalFileName = remoteName;
+          }
+        }
+      }
 
       archive.append(videoResponse.data, { name: finalFileName });
       archive.finalize();
@@ -343,6 +392,7 @@ app.post('/api/process-video', async (req, res) => {
         message: 'Video zipped and uploaded to Drive!', 
         progress: 100, 
         fileId: fileId,
+        zipPassword: password, // Important to keep it here too
         timestamp: Date.now()
       });
 

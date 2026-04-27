@@ -29,6 +29,7 @@ declare const google: any;
 interface Status {
   type: 'idle' | 'loading' | 'success' | 'error';
   message: string;
+  zipPassword?: string;
 }
 
 export default function App() {
@@ -45,7 +46,7 @@ export default function App() {
 
   const saveManualId = () => {
     if (manualClientId) {
-      setStatus({ type: 'success', message: 'Client ID saved for this session!' });
+      setStatus({ type: 'success', message: 'کد کلاینت ذخیره شد!' });
       setTimeout(() => setStatus({ type: 'idle', message: '' }), 2000);
     }
   };
@@ -71,7 +72,7 @@ export default function App() {
     if (!CLIENT_ID) {
       setStatus({ 
         type: 'error', 
-        message: 'Please configure VITE_GOOGLE_CLIENT_ID in the box below.' 
+        message: 'لطفاً کد کلاینت گوگل را در کادر پایین وارد کنید.' 
       });
       return;
     }
@@ -84,10 +85,10 @@ export default function App() {
           callback: (response: any) => {
             if (response.access_token) {
               setAccessToken(response.access_token);
-              setStatus({ type: 'success', message: 'Connected to Google Drive!' });
+              setStatus({ type: 'success', message: 'با موفقیت به گوگل درایو متصل شد!' });
               setTimeout(() => setStatus({ type: 'idle', message: '' }), 3000);
             } else {
-              setStatus({ type: 'error', message: 'Failed to get access token from Google.' });
+              setStatus({ type: 'error', message: 'خطا در دریافت توکن از گوگل.' });
             }
           },
         });
@@ -95,63 +96,74 @@ export default function App() {
       tokenClientRef.current.requestAccessToken();
     } catch (error) {
       console.error(error);
-      setStatus({ type: 'error', message: 'Failed to initialize Google Login.' });
+      setStatus({ type: 'error', message: 'خطا در راه‌اندازی ورود گوگل.' });
     }
   };
 
   const handleLogout = () => {
     setAccessToken(null);
-    setStatus({ type: 'idle', message: 'Logged out successfully.' });
+    setStatus({ type: 'idle', message: 'با موفقیت خارج شدید.' });
   };
 
   const processVideo = async () => {
     if (!videoUrl) {
-      setStatus({ type: 'error', message: 'Please enter a video URL.' });
+      setStatus({ type: 'error', message: 'لطفاً لینک ویدیو را وارد کنید.' });
       return;
     }
 
     if (!accessToken) {
-      setStatus({ type: 'error', message: 'Please connect your Google Drive first.' });
+      setStatus({ type: 'error', message: 'ابتدا به گوگل درایو متصل شوید.' });
       return;
     }
 
     try {
-      setStatus({ type: 'loading', message: 'Task submitted. Initiating server-side processing...' });
+      setStatus({ type: 'loading', message: 'درخواست ثبت شد. شروع پردازش در سرور...' });
       setProgress(5);
 
-      // Using a long timeout for the server-side process
       const startRes = await axios.post('/api/process-video', {
         videoUrl,
         accessToken,
       });
 
       if (!startRes.data.success || !startRes.data.jobId) {
-        throw new Error('Failed to start processing job.');
+        throw new Error('خطا در شروع عملیات.');
       }
 
       const jobId = startRes.data.jobId;
       console.log('Started job:', jobId);
 
-      // Start polling
       let retryCount = 0;
       const pollInterval = setInterval(async () => {
         try {
           const statusRes = await axios.get(`/api/job-status/${jobId}`);
           const job = statusRes.data;
-          retryCount = 0; // Reset on success
+          retryCount = 0;
 
           if (job.status === 'success') {
             clearInterval(pollInterval);
-            setStatus({ type: 'success', message: `Successfully processed! File ID: ${job.fileId}` });
+            setStatus({ 
+              type: 'success', 
+              message: `عملیات با موفقیت انجام شد! فایل در درایو آپلود شد.`,
+              zipPassword: job.zipPassword
+            });
             setProgress(100);
             setVideoUrl('');
           } else if (job.status === 'error') {
             clearInterval(pollInterval);
-            setStatus({ type: 'error', message: `${job.message} ${job.details || ''}` });
+            // Translate some common error messages if needed
+            let msg = job.message;
+            if (msg === 'Failed to process video.') msg = 'پردازش ویدیو ناموفق بود.';
+            setStatus({ type: 'error', message: `${msg} ${job.details || ''}` });
             setProgress(0);
           } else {
-            // Update progress and message
-            setStatus({ type: 'loading', message: job.message });
+            // Update messages to Persian if possible or just use them
+            let displayMsg = job.message;
+            if (displayMsg.includes('Analyzing source')) displayMsg = 'در حال تحلیل منبع...';
+            if (displayMsg.includes('Initializing ZIP')) displayMsg = 'در حال آماده‌سازی فشرده‌سازی...';
+            if (displayMsg.includes('Zipping & Transferring')) displayMsg = 'در حال زیپ کردن و انتقال... ' + displayMsg.split(':')[1];
+            if (displayMsg.includes('Transfer active')) displayMsg = 'انتقال فعال است...';
+
+            setStatus({ type: 'loading', message: displayMsg });
             setProgress(job.progress);
           }
         } catch (pollError) {
@@ -159,33 +171,21 @@ export default function App() {
           retryCount++;
           if (retryCount > 10) {
             clearInterval(pollInterval);
-            setStatus({ type: 'error', message: 'Connection lost with server. Please refresh or try again.' });
+            setStatus({ type: 'error', message: 'ارتباط با سرور قطع شد. لطفاً دوباره تلاش کنید.' });
           }
         }
       }, 3000);
 
-      // Cleanup polling after 30 minutes just in case
       setTimeout(() => clearInterval(pollInterval), 1800000);
 
     } catch (error: any) {
       console.error('Frontend processing error:', error);
-      let errorMsg = 'An error occurred during processing.';
+      let errorMsg = 'خطایی در پردازش رخ داد.';
       
       if (error.code === 'ECONNABORTED') {
-        errorMsg = 'Processing took too long and timed out. Check your Google Drive in a few minutes, it might still finish.';
+        errorMsg = 'زمان پردازش طولانی شد. تا چند دقیقه دیگر گوگل درایو خود را چک کنید.';
       } else if (error.message === 'Network Error') {
-        errorMsg = 'Network Error: Cannot reach the server. Please check your internet or try refreshing the page.';
-      } else if (error.response?.status === 400) {
-        const details = error.response.data.details || '';
-        if (details.includes('Regional Block') || details.includes('suspended access') || details.includes('Extraction Failure')) {
-          errorMsg = `Server Restricted: ${details}. This site is actively blocking our server IP/Region. Try using a mirror link (like rt.pornhub.com) or copy a direct link from a downloader site.`;
-        } else {
-          errorMsg = details || 'The source site blocked the server from downloading. This often happens with protected or expired links.';
-        }
-      } else if (error.response?.data?.details) {
-        errorMsg = `Server Error: ${error.response.data.details}`;
-      } else {
-        errorMsg = `Error: ${error.message}`;
+        errorMsg = 'خطای شبکه: امکان اتصال به سرور نیست.';
       }
       
       setStatus({ type: 'error', message: errorMsg });
@@ -216,9 +216,9 @@ export default function App() {
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.1 }}
-            className="text-5xl font-extrabold tracking-tight mb-4 bg-clip-text text-transparent bg-gradient-to-r from-white to-slate-400"
+            className="text-5xl font-display mb-4 bg-clip-text text-transparent bg-gradient-to-r from-white to-slate-400"
           >
-            Drive Video Zipper
+            زیپ‌کن برقی ⚡️
           </motion.h1>
           <motion.p 
             initial={{ opacity: 0 }}
@@ -226,7 +226,7 @@ export default function App() {
             transition={{ delay: 0.2 }}
             className="text-slate-400 max-w-lg mx-auto text-lg"
           >
-            Professional high-speed video processing. Pure simplicity.
+            ویدیوها رو بفرست به درایو، زیپ شده و با رمز خفن! 🚀
           </motion.p>
         </header>
 
@@ -246,7 +246,7 @@ export default function App() {
                   {accessToken && <div className="absolute inset-0 w-3 h-3 rounded-full bg-green-400 animate-ping opacity-75" />}
                 </div>
                 <span className="text-sm font-semibold tracking-wide text-slate-300">
-                  {accessToken ? 'GOOGLE DRIVE ACTIVE' : 'GOOGLE DRIVE DISCONNECTED'}
+                  {accessToken ? 'اتصال به درایو برقراره ✅' : 'گوگل درایوت وصل نیست! 👇'}
                 </span>
               </div>
               
@@ -257,7 +257,7 @@ export default function App() {
                   className="w-full sm:w-auto flex items-center justify-center gap-2 px-6 py-2.5 bg-white text-surface-900 rounded-xl text-sm font-bold hover:bg-slate-200 transition-all active:scale-95 disabled:opacity-50"
                 >
                   <img src="https://www.google.com/favicon.ico" alt="Google" className="w-4 h-4" />
-                  Connect Drive
+                  بزن بریم (ورود با گوگل)
                 </button>
               ) : (
                 <button 
@@ -265,7 +265,7 @@ export default function App() {
                   className="w-full sm:w-auto flex items-center justify-center gap-2 px-6 py-2.5 bg-white/10 border border-white/10 text-slate-300 hover:bg-white/15 rounded-xl text-sm font-bold transition-all"
                 >
                   <LogOut className="w-4 h-4" />
-                  Disconnect
+                  خروج از حساب
                 </button>
               )}
             </div>
@@ -276,26 +276,27 @@ export default function App() {
             <div className="space-y-8">
               <div>
                 <label htmlFor="video-url" className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">
-                  Video URL
+                  لینک ویدیو رو اینجا بچسبون 🔗
                 </label>
                 <div className="relative group">
                   <input
                     type="url"
                     id="video-url"
-                    placeholder="Enter link to video or page..."
+                    dir="ltr"
+                    placeholder="https://site.com/video.mp4"
                     value={videoUrl}
                     onChange={(e) => setVideoUrl(e.target.value)}
-                    className="w-full px-5 py-4 bg-slate-900/50 border border-white/10 rounded-2xl text-white placeholder:text-slate-600 focus:ring-2 focus:ring-brand-primary/50 focus:border-brand-primary transition-all outline-none"
+                    className="w-full px-5 py-4 bg-slate-900/50 border border-white/10 rounded-2xl text-white placeholder:text-slate-700 focus:ring-2 focus:ring-brand-primary/50 focus:border-brand-primary transition-all outline-none"
                   />
-                  <div className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-600 group-focus-within:text-brand-primary transition-colors">
+                  <div className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-700 group-focus-within:text-brand-primary transition-colors">
                     <Video className="w-6 h-6" />
                   </div>
                 </div>
                 
                 <div className="mt-4 p-4 bg-brand-primary/10 rounded-2xl border border-brand-primary/20">
                   <p className="text-xs text-indigo-300 leading-relaxed">
-                    <span className="font-bold text-indigo-200 uppercase mr-1">Pro Tip:</span> 
-                    If smart extraction fails due to site blocks, use a downloader tool (like <strong>savethevideo.com</strong> or <strong>keepv.id</strong>) to get a direct <strong>.mp4</strong> link. Paste that link here and our server will handle the transfer to Drive!
+                    <span className="font-bold text-indigo-200 uppercase ml-1">فوت کوزه‌گری:</span> 
+                    اگه استخراج اتوماتیک پرید، از سایت‌های کمکی استفاده کن و <strong>لینک مستقیم mp4</strong> رو اینجا بذار. اینجوری هیچ‌کی نمیتونه جلوتو بگیره! 😎
                   </p>
                 </div>
               </div>
@@ -306,12 +307,12 @@ export default function App() {
                 className="relative w-full overflow-hidden group"
               >
                 <div className={`absolute inset-0 bg-gradient-to-r from-brand-primary to-brand-secondary transition-transform duration-500 group-hover:scale-105 ${status.type === 'loading' && 'animate-pulse'}`} />
-                <div className="relative flex items-center justify-center gap-3 px-8 py-5 text-white font-bold text-lg active:scale-[0.98] transition-transform">
+                <div className="relative flex items-center justify-center gap-3 px-8 py-5 text-white font-display text-2xl active:scale-[0.98] transition-transform">
                   {status.type === 'loading' ? (
                     <Loader2 className="w-7 h-7 animate-spin" />
                   ) : (
                     <>
-                      <span>Burn into Drive</span>
+                      <span>بفرست بره تو درایو! 🚀</span>
                       <Upload className="w-5 h-5 group-hover:-translate-y-1 transition-transform" />
                     </>
                   )}
@@ -349,25 +350,51 @@ export default function App() {
                     initial={{ opacity: 0, scale: 0.95 }}
                     animate={{ opacity: 1, scale: 1 }}
                     exit={{ opacity: 0, scale: 0.95 }}
-                    className={`flex items-start gap-4 p-5 rounded-2xl border ${
+                    className={`flex flex-col gap-4 p-5 rounded-2xl border ${
                       status.type === 'success' 
                         ? 'bg-green-500/10 border-green-500/20 text-green-300' 
                         : 'bg-red-500/10 border-red-500/20 text-red-300'
                     }`}
                   >
-                    <div className="mt-1">
-                      {status.type === 'success' ? (
-                        <CheckCircle className="w-6 h-6" />
-                      ) : (
-                        <AlertCircle className="w-6 h-6" />
-                      )}
+                    <div className="flex items-start gap-4">
+                      <div className="mt-1">
+                        {status.type === 'success' ? (
+                          <CheckCircle className="w-6 h-6" />
+                        ) : (
+                          <AlertCircle className="w-6 h-6" />
+                        )}
+                      </div>
+                      <div>
+                        <p className="font-bold text-sm uppercase tracking-widest mb-1">
+                          {status.type === 'success' ? 'عملیات با موفقیت پایان یافت' : 'خطا در پردازش'}
+                        </p>
+                        <p className="text-sm opacity-90 leading-relaxed">{status.message}</p>
+                      </div>
                     </div>
-                    <div>
-                      <p className="font-bold text-sm uppercase tracking-widest mb-1">
-                        {status.type === 'success' ? 'Task Completed' : 'Process Error'}
-                      </p>
-                      <p className="text-sm opacity-90 leading-relaxed">{status.message}</p>
-                    </div>
+
+                    {status.type === 'success' && status.zipPassword && (
+                      <div className="mt-4 p-6 bg-slate-900/80 rounded-2xl border border-white/10 space-y-4">
+                        <div>
+                          <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">رمز عبور فایل زیپ (بسیار مهم):</p>
+                          <div className="flex items-center gap-3 bg-slate-800 p-4 rounded-xl border border-white/5 group">
+                            <code className="text-lg font-mono text-brand-secondary break-all flex-1 underline decoration-brand-secondary/30">{status.zipPassword}</code>
+                            <button 
+                              onClick={() => navigator.clipboard.writeText(status.zipPassword!)}
+                              className="p-2 hover:bg-white/10 rounded-lg transition-colors text-slate-400 hover:text-white"
+                              title="کپی رمز عبور"
+                            >
+                              <CheckCircle className="w-5 h-5" />
+                            </button>
+                          </div>
+                        </div>
+                        <div className="bg-orange-500/10 border border-orange-500/20 p-4 rounded-xl flex items-start gap-3">
+                          <AlertCircle className="w-5 h-5 text-orange-400 mt-0.5" />
+                          <p className="text-xs text-orange-200/80 leading-relaxed">
+                            <span className="font-bold text-orange-300">هشدار امنیتی:</span> این رمز عبور در هیچ کجا ذخیره نمی‌شود. لطفاً همین الان آن را در جایی امن یادداشت یا ذخیره کنید. بدون این رمز، باز کردن فایل زیپ غیرممکن خواهد بود.
+                          </p>
+                        </div>
+                      </div>
+                    )}
                   </motion.div>
                 )}
               </AnimatePresence>
@@ -378,12 +405,12 @@ export default function App() {
           <div className="px-10 py-8 bg-slate-900/30 border-t border-white/5 flex flex-col md:flex-row items-center justify-between gap-4 text-xs font-mono text-slate-500 uppercase tracking-widest">
             <div className="flex items-center gap-3">
               <ShieldCheck className="w-5 h-5 text-slate-600" />
-              <span>Secure End-to-End processing</span>
+              <span>پردازش امن و رمزنگاری شده</span>
             </div>
             <div className="flex items-center gap-2">
-              <span className="opacity-50">v1.2.0</span>
+              <span className="opacity-50" dir="ltr">v1.2.0</span>
               <span className="w-1 h-1 bg-slate-700 rounded-full" />
-              <span>GDRIVE_API_v3</span>
+              <span dir="ltr">GDRIVE_API_v3</span>
             </div>
           </div>
         </motion.div>
@@ -400,45 +427,46 @@ export default function App() {
               <ShieldCheck className="w-5 h-5 text-indigo-400" />
             </div>
             <h3 className="text-lg font-bold text-slate-200">
-              API Configuration
+              تنظیمات API
             </h3>
           </div>
           
           <div className="space-y-6">
             <div>
-              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-3">
-                Client ID
+              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-3 text-right">
+                Client ID (کد کلاینت)
               </label>
               <div className="flex flex-col sm:flex-row gap-3">
                 <input
                   type="text"
+                  dir="ltr"
                   placeholder="Paste OAuth Client ID..."
                   value={manualClientId}
                   onChange={(e) => setManualClientId(e.target.value)}
-                  className="flex-1 px-4 py-3 bg-slate-900/50 border border-white/10 rounded-xl text-sm focus:ring-2 focus:ring-brand-primary outline-none transition-all placeholder:text-slate-700"
+                  className="flex-1 px-4 py-3 bg-slate-900/50 border border-white/10 rounded-xl text-sm focus:ring-2 focus:ring-brand-primary outline-none transition-all placeholder:text-slate-700 text-left"
                 />
                 <button 
                   onClick={saveManualId}
                   className="px-8 py-3 bg-slate-700 hover:bg-slate-600 text-white rounded-xl text-sm font-bold transition-all active:scale-95 shadow-lg"
                 >
-                  Sync
+                  ذخیره
                 </button>
               </div>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-4 border-t border-white/5">
               <div className="space-y-3">
-                <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Setup Steps</p>
-                <ol className="text-xs text-slate-500 space-y-2 list-decimal list-inside opacity-80">
-                  <li>Visit <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener noreferrer" className="text-indigo-400 hover:underline">Google Console</a></li>
-                  <li>Enable <span className="text-slate-400">Google Drive API</span></li>
-                  <li>Create <span className="text-slate-400">OAuth 2.0 Web Client</span></li>
+                <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">مراحل راه‌اندازی</p>
+                <ol className="text-xs text-slate-500 space-y-2 list-decimal list-inside opacity-80 pr-4">
+                  <li>به <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener noreferrer" className="text-indigo-400 hover:underline">کنسول گوگل</a> بروید</li>
+                  <li>سرویس <span className="text-slate-400">Google Drive API</span> را فعال کنید</li>
+                  <li>یک <span className="text-slate-400">OAuth 2.0 Web Client</span> بسازید</li>
                 </ol>
               </div>
               <div className="space-y-3">
-                <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Origins</p>
+                <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Origins (آدرس مجاز)</p>
                 <div className="bg-slate-900 p-3 rounded-lg border border-white/5 group">
-                  <code className="text-[10px] text-indigo-400 break-all">{window.location.origin}</code>
+                  <code className="text-[10px] text-indigo-400 break-all" dir="ltr">{window.location.origin}</code>
                 </div>
               </div>
             </div>
@@ -446,7 +474,7 @@ export default function App() {
         </motion.div>
 
         <footer className="mt-16 text-center">
-          <p className="text-xs font-mono text-slate-600 uppercase tracking-[0.2em] mb-2 font-bold">
+          <p className="text-xs font-mono text-slate-600 uppercase tracking-[0.2em] mb-2 font-bold" dir="ltr">
             © 2026 Drive Video Zipper
           </p>
           <div className="w-12 h-1 bg-gradient-to-r from-brand-primary to-brand-secondary mx-auto rounded-full opacity-50" />
