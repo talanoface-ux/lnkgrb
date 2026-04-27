@@ -149,202 +149,202 @@ setInterval(() => {
   }
 }, 3600000);
 
+const app = express();
+
+app.use(express.json());
+
+// Health check endpoint
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', message: 'Server is reachable', jobsCount: jobs.size });
+});
+
+// Get job status API
+app.get('/api/job-status/:id', (req, res) => {
+  const job = jobs.get(req.params.id);
+  if (!job) return res.status(404).json({ error: 'Job not found' });
+  res.json(job);
+});
+
+// API Route: Process Video (Download -> Zip -> Upload) - Now non-blocking
+app.post('/api/process-video', async (req, res) => {
+  console.log('Received process-video request');
+  let { videoUrl, accessToken } = req.body;
+
+  if (!videoUrl || !accessToken) {
+    return res.status(400).json({ error: 'Video URL and Access Token are required' });
+  }
+
+  const jobId = Math.random().toString(36).substring(2, 15);
+  jobs.set(jobId, { 
+    status: 'loading', 
+    message: 'Starting process...', 
+    progress: 10,
+    timestamp: Date.now()
+  });
+
+  // Respond immediately with jobId
+  res.json({ success: true, jobId });
+
+  // Run the actual processing in the background
+  (async () => {
+    try {
+      let finalDownloadUrl = videoUrl;
+      let finalFileName = 'video.mp4';
+
+      const lowerUrl = videoUrl.toLowerCase();
+      const isPornhubDomain = /pornhub\.com|phncdn\.com/.test(lowerUrl);
+      const isYoutubeDomain = /youtube\.com|youtu\.be|googlevideo\.com/.test(lowerUrl);
+
+      jobs.set(jobId, { ...jobs.get(jobId)!, progress: 20, message: 'Analyzing source...' });
+
+      // 1. Check if we need to extract
+      const isDirectMedia = lowerUrl.match(/\.(mp4|webm|mkv|avi|mov|m3u8)(?:\?|$)/) || (isPornhubDomain && lowerUrl.includes('phncdn.com')) || (isYoutubeDomain && lowerUrl.includes('googlevideo.com'));
+      const needsExtraction = !isDirectMedia || lowerUrl.includes('view_video.php') || lowerUrl.includes('/watch?v=') || (isPornhubDomain && !lowerUrl.includes('phncdn.com') && !lowerUrl.includes('.mp4'));
+
+      if (needsExtraction) {
+        try {
+          const extracted = await extractVideoUrl(videoUrl);
+          finalDownloadUrl = extracted.url;
+          finalFileName = extracted.filename;
+          console.log('Extracted URL:', finalDownloadUrl);
+        } catch (extractionError: any) {
+          console.error('Extraction failed:', extractionError.message);
+          if (isPornhubDomain || isYoutubeDomain) {
+            jobs.set(jobId, { status: 'error', message: 'Extraction Failure', details: extractionError.message, progress: 0, timestamp: Date.now() });
+            return;
+          }
+        }
+      } else {
+        try {
+          const urlObj = new URL(videoUrl);
+          const queryFilename = urlObj.searchParams.get('filename');
+          if (queryFilename) {
+            finalFileName = queryFilename.endsWith('.mp4') ? queryFilename : `${queryFilename}.mp4`;
+          } else {
+            finalFileName = path.basename(urlObj.pathname) || 'video.mp4';
+          }
+        } catch (e) {
+          finalFileName = 'video.mp4';
+        }
+      }
+
+      let actualSize = 0;
+      jobs.set(jobId, { ...jobs.get(jobId)!, progress: 40, message: 'Initializing ZIP transfer...' });
+
+      // 2. Setup Google Drive Client
+      const auth = new google.auth.OAuth2();
+      auth.setCredentials({ access_token: accessToken });
+      const drive = google.drive({ version: 'v3', auth });
+      
+      // 3. Setup Streams
+      const zipStream = new PassThrough({ highWaterMark: 2 * 1024 * 1024 }); 
+      const archive = archiver('zip', { zlib: { level: 0 } });
+
+      const progressTracker = new PassThrough({ highWaterMark: 2 * 1024 * 1024 });
+      let bytesProcessed = 0;
+      
+      progressTracker.on('data', (chunk) => {
+        bytesProcessed += chunk.length;
+        const mb = (bytesProcessed / 1024 / 1024).toFixed(1);
+        const currentJob = jobs.get(jobId);
+        if (currentJob && currentJob.status === 'loading') {
+          jobs.set(jobId, { 
+            ...currentJob, 
+            message: `Zipping & Transferring: ${mb}MB...`,
+            progress: 50 + Math.min(49, (bytesProcessed / (actualSize || 300000000)) * 49)
+          });
+        }
+      });
+
+      archive.on('error', (err) => {
+        console.error('Archive error:', err);
+        jobs.set(jobId, { status: 'error', message: 'Archiver Error', details: err.message, progress: 0, timestamp: Date.now() });
+      });
+
+      archive.pipe(progressTracker).pipe(zipStream);
+
+      // 4. Download video as stream
+      console.log('Starting stream download...');
+      
+      const config: any = { 
+        responseType: 'stream',
+        timeout: 0, 
+        maxRedirects: 10,
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+          'Accept': '*/*',
+          'Accept-Language': 'en-US,en;q=0.9',
+          'Referer': isPornhubDomain ? 'https://www.pornhub.com/' : 'https://www.google.com/',
+        }
+      };
+
+      const targetLower = finalDownloadUrl.toLowerCase();
+      if (targetLower.includes('pornhub.com') || targetLower.includes('phncdn.com')) {
+        config.headers['Cookie'] = 'accessAgeDisclaimerPH=1; age_verified=1; accessPH=1; content_filter=0; platform=pc; bs=1; expired_notice_PH=1; cookie_free_porn=1; atatus_checker=1; invite_survey_seen=1; hide_survey=1; cookiesBannerSeen=1; has_access=1; access_verified=1; welcome_PH=1; d_id=1; il=1;';
+      }
+      
+      const videoResponse = await axios.get(finalDownloadUrl, config);
+      const contentType = String(videoResponse.headers['content-type'] || '');
+      actualSize = parseInt(String(videoResponse.headers['content-length'] || '0'));
+      
+      if (contentType.includes('text/html')) {
+        jobs.set(jobId, { status: 'error', message: 'Content Error', details: 'The server received a HTML page instead of video.', progress: 0, timestamp: Date.now() });
+        return;
+      }
+
+      jobs.set(jobId, { ...jobs.get(jobId)!, progress: 50, message: 'Transfer active...' });
+
+      archive.append(videoResponse.data, { name: finalFileName });
+      archive.finalize();
+
+      // 5. Upload ZIP stream to Google Drive
+      const driveResponse: any = await drive.files.create({
+        requestBody: {
+          name: `${finalFileName}.zip`,
+          mimeType: 'application/zip',
+        },
+        media: {
+          mimeType: 'application/zip',
+          body: zipStream,
+        }
+      }, {
+        timeout: 0,
+      });
+
+      const fileId = driveResponse.data.id;
+      console.log('Upload success:', fileId);
+      jobs.set(jobId, { 
+        status: 'success', 
+        message: 'Video zipped and uploaded to Drive!', 
+        progress: 100, 
+        fileId: fileId,
+        timestamp: Date.now()
+      });
+
+    } catch (error: any) {
+      console.error('Job error:', error.message);
+      jobs.set(jobId, { 
+        status: 'error', 
+        message: 'Failed to process video.', 
+        details: error.message, 
+        progress: 0,
+        timestamp: Date.now()
+      });
+    }
+  })();
+});
+
 async function startServer() {
-  const app = express();
   const PORT = 3000;
 
-  app.use(express.json());
-
-  // Health check endpoint
-  app.get('/api/health', (req, res) => {
-    res.json({ status: 'ok', message: 'Server is reachable', jobsCount: jobs.size });
-  });
-
-  // Get job status API
-  app.get('/api/job-status/:id', (req, res) => {
-    const job = jobs.get(req.params.id);
-    if (!job) return res.status(404).json({ error: 'Job not found' });
-    res.json(job);
-  });
-
-  // API Route: Process Video (Download -> Zip -> Upload) - Now non-blocking
-  app.post('/api/process-video', async (req, res) => {
-    console.log('Received process-video request');
-    let { videoUrl, accessToken } = req.body;
-
-    if (!videoUrl || !accessToken) {
-      return res.status(400).json({ error: 'Video URL and Access Token are required' });
-    }
-
-    const jobId = Math.random().toString(36).substring(2, 15);
-    jobs.set(jobId, { 
-      status: 'loading', 
-      message: 'Starting process...', 
-      progress: 10,
-      timestamp: Date.now()
-    });
-
-    // Respond immediately with jobId
-    res.json({ success: true, jobId });
-
-    // Run the actual processing in the background
-    (async () => {
-      try {
-        let finalDownloadUrl = videoUrl;
-        let finalFileName = 'video.mp4';
-
-        const lowerUrl = videoUrl.toLowerCase();
-        const isPornhubDomain = /pornhub\.com|phncdn\.com/.test(lowerUrl);
-        const isYoutubeDomain = /youtube\.com|youtu\.be|googlevideo\.com/.test(lowerUrl);
-
-        jobs.set(jobId, { ...jobs.get(jobId)!, progress: 20, message: 'Analyzing source...' });
-
-        // 1. Check if we need to extract
-        const isDirectMedia = lowerUrl.match(/\.(mp4|webm|mkv|avi|mov|m3u8)(?:\?|$)/) || (isPornhubDomain && lowerUrl.includes('phncdn.com')) || (isYoutubeDomain && lowerUrl.includes('googlevideo.com'));
-        const needsExtraction = !isDirectMedia || lowerUrl.includes('view_video.php') || lowerUrl.includes('/watch?v=') || (isPornhubDomain && !lowerUrl.includes('phncdn.com') && !lowerUrl.includes('.mp4'));
-
-        if (needsExtraction) {
-          try {
-            const extracted = await extractVideoUrl(videoUrl);
-            finalDownloadUrl = extracted.url;
-            finalFileName = extracted.filename;
-            console.log('Extracted URL:', finalDownloadUrl);
-          } catch (extractionError: any) {
-            console.error('Extraction failed:', extractionError.message);
-            if (isPornhubDomain || isYoutubeDomain) {
-              jobs.set(jobId, { status: 'error', message: 'Extraction Failure', details: extractionError.message, progress: 0, timestamp: Date.now() });
-              return;
-            }
-          }
-        } else {
-          try {
-            const urlObj = new URL(videoUrl);
-            const queryFilename = urlObj.searchParams.get('filename');
-            if (queryFilename) {
-              finalFileName = queryFilename.endsWith('.mp4') ? queryFilename : `${queryFilename}.mp4`;
-            } else {
-              finalFileName = path.basename(urlObj.pathname) || 'video.mp4';
-            }
-          } catch (e) {
-            finalFileName = 'video.mp4';
-          }
-        }
-
-        let actualSize = 0;
-        jobs.set(jobId, { ...jobs.get(jobId)!, progress: 40, message: 'Initializing ZIP transfer...' });
-
-        // 2. Setup Google Drive Client
-        const auth = new google.auth.OAuth2();
-        auth.setCredentials({ access_token: accessToken });
-        const drive = google.drive({ version: 'v3', auth });
-        
-        // 3. Setup Streams
-        const zipStream = new PassThrough({ highWaterMark: 2 * 1024 * 1024 }); 
-        const archive = archiver('zip', { zlib: { level: 0 } });
-
-        const progressTracker = new PassThrough({ highWaterMark: 2 * 1024 * 1024 });
-        let bytesProcessed = 0;
-        
-        progressTracker.on('data', (chunk) => {
-          bytesProcessed += chunk.length;
-          const mb = (bytesProcessed / 1024 / 1024).toFixed(1);
-          const currentJob = jobs.get(jobId);
-          if (currentJob && currentJob.status === 'loading') {
-            jobs.set(jobId, { 
-              ...currentJob, 
-              message: `Zipping & Transferring: ${mb}MB...`,
-              progress: 50 + Math.min(49, (bytesProcessed / (actualSize || 300000000)) * 49)
-            });
-          }
-        });
-
-        archive.on('error', (err) => {
-          console.error('Archive error:', err);
-          jobs.set(jobId, { status: 'error', message: 'Archiver Error', details: err.message, progress: 0, timestamp: Date.now() });
-        });
-
-        archive.pipe(progressTracker).pipe(zipStream);
-
-        // 4. Download video as stream
-        console.log('Starting stream download...');
-        
-        const config: any = { 
-          responseType: 'stream',
-          timeout: 0, 
-          maxRedirects: 10,
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
-            'Accept': '*/*',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Referer': isPornhubDomain ? 'https://www.pornhub.com/' : 'https://www.google.com/',
-          }
-        };
-
-        const targetLower = finalDownloadUrl.toLowerCase();
-        if (targetLower.includes('pornhub.com') || targetLower.includes('phncdn.com')) {
-          config.headers['Cookie'] = 'accessAgeDisclaimerPH=1; age_verified=1; accessPH=1; content_filter=0; platform=pc; bs=1; expired_notice_PH=1; cookie_free_porn=1; atatus_checker=1; invite_survey_seen=1; hide_survey=1; cookiesBannerSeen=1; has_access=1; access_verified=1; welcome_PH=1; d_id=1; il=1;';
-        }
-        
-        const videoResponse = await axios.get(finalDownloadUrl, config);
-        const contentType = String(videoResponse.headers['content-type'] || '');
-        actualSize = parseInt(String(videoResponse.headers['content-length'] || '0'));
-        
-        if (contentType.includes('text/html')) {
-          jobs.set(jobId, { status: 'error', message: 'Content Error', details: 'The server received a HTML page instead of video.', progress: 0, timestamp: Date.now() });
-          return;
-        }
-
-        jobs.set(jobId, { ...jobs.get(jobId)!, progress: 50, message: 'Transfer active...' });
-
-        archive.append(videoResponse.data, { name: finalFileName });
-        archive.finalize();
-
-        // 5. Upload ZIP stream to Google Drive
-        const driveResponse: any = await drive.files.create({
-          requestBody: {
-            name: `${finalFileName}.zip`,
-            mimeType: 'application/zip',
-          },
-          media: {
-            mimeType: 'application/zip',
-            body: zipStream,
-          }
-        }, {
-          timeout: 0,
-        });
-
-        const fileId = driveResponse.data.id;
-        console.log('Upload success:', fileId);
-        jobs.set(jobId, { 
-          status: 'success', 
-          message: 'Video zipped and uploaded to Drive!', 
-          progress: 100, 
-          fileId: fileId,
-          timestamp: Date.now()
-        });
-
-      } catch (error: any) {
-        console.error('Job error:', error.message);
-        jobs.set(jobId, { 
-          status: 'error', 
-          message: 'Failed to process video.', 
-          details: error.message, 
-          progress: 0,
-          timestamp: Date.now()
-        });
-      }
-    })();
-  });
-
-
   // Vite middleware for development
-  if (process.env.NODE_ENV !== 'production') {
+  if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
     });
     app.use(vite.middlewares);
-  } else {
+  } else if (process.env.NODE_ENV === 'production' && !process.env.VERCEL) {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
     app.get('*', (req, res) => {
@@ -352,9 +352,15 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-  });
+  // Only listen if not on Vercel (Vercel manages the entry point)
+  if (!process.env.VERCEL) {
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`Server running on http://localhost:${PORT}`);
+    });
+  }
 }
 
 startServer();
+
+export default app;
+
