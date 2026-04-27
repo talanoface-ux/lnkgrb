@@ -330,7 +330,13 @@ app.post('/api/process-video', async (req, res) => {
         config.headers['Cookie'] = 'accessAgeDisclaimerPH=1; age_verified=1; accessPH=1; content_filter=0; platform=pc; bs=1; expired_notice_PH=1; cookie_free_porn=1; atatus_checker=1; invite_survey_seen=1; hide_survey=1; cookiesBannerSeen=1; has_access=1; access_verified=1; welcome_PH=1; d_id=1; il=1;';
       }
       
-      const videoResponse = await axios.get(finalDownloadUrl, config);
+      console.log('Starting stream download from:', finalDownloadUrl);
+      const videoResponse = await axios.get(finalDownloadUrl, {
+        ...config,
+        responseType: 'stream',
+        timeout: 60000 // 1 minute to start receiving
+      });
+
       const contentType = String(videoResponse.headers['content-type'] || '').toLowerCase();
       const contentDisposition = String(videoResponse.headers['content-disposition'] || '').toLowerCase();
       actualSize = parseInt(String(videoResponse.headers['content-length'] || '0'));
@@ -341,33 +347,31 @@ app.post('/api/process-video', async (req, res) => {
       if (isHtml) {
         console.error('Download attempt returned HTML/XML instead of video stream.');
         jobs.set(jobId, { status: 'error', message: 'خطای محتوا', details: 'سایت منبع به جای ویدیو، یک صفحه وب برگرداند. احتمالا لینک منقضی شده یا دسترسی مسدود است.', progress: 0, timestamp: Date.now() });
+        videoResponse.data.destroy();
         return;
       }
 
       // If it's a playlist (m3u8), we can't just download it as a stream
       if (contentType.includes('mpegurl') || finalDownloadUrl.includes('.m3u8')) {
         jobs.set(jobId, { status: 'error', message: 'لینک نامعتبر', details: 'این لینک یک لیست پخش (HLS) است. لطفا لینک مستقیم .mp4 را وارد کنید.', progress: 0, timestamp: Date.now() });
+        videoResponse.data.destroy();
         return;
       }
 
-      // Security: If size is extremely small (e.g. < 50kb) and it's supposedly a video, it might be an error string
-      if (actualSize > 0 && actualSize < 50000) {
-         console.warn('Extremely small file size detected for video stream.');
-      }
-
-      jobs.set(jobId, { ...jobs.get(jobId)!, progress: 50, message: 'در حال انتقال داده‌ها...' });
+      jobs.set(jobId, { ...jobs.get(jobId)!, progress: 50, message: 'در حال دریافت و زیپ کردن استریم ویدیو...' });
 
       // Detect filename from Content-Disposition if possible
       if (contentDisposition.includes('filename=')) {
         const match = contentDisposition.match(/filename="?([^";]+)"?/);
         if (match && match[1]) {
           const remoteName = match[1];
-          if (remoteName.endsWith('.mp4') || remoteName.endsWith('.webm')) {
+          if (remoteName.endsWith('.mp4') || remoteName.endsWith('.webm') || remoteName.endsWith('.mkv')) {
             finalFileName = remoteName;
           }
         }
       }
 
+      // Append the stream directly
       archive.append(videoResponse.data, { name: finalFileName });
       archive.finalize();
 
