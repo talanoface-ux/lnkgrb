@@ -17,7 +17,9 @@ import {
   LogOut, 
   ExternalLink,
   ShieldCheck,
-  Video
+  Video,
+  XCircle,
+  ArrowUpRight
 } from 'lucide-react';
 
 // Google Drive API Scopes
@@ -26,18 +28,23 @@ const SCOPES = 'https://www.googleapis.com/auth/drive.file';
 // Types
 declare const google: any;
 
-interface Status {
-  type: 'idle' | 'loading' | 'success' | 'error';
+interface JobStatus {
+  id: string;
+  url: string;
+  status: 'loading' | 'success' | 'resumed' | 'error' | 'idle';
   message: string;
+  progress: number;
   zipPassword?: string;
+  zipName?: string;
+  details?: string;
 }
 
 export default function App() {
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [manualClientId, setManualClientId] = useState('');
-  const [videoUrl, setVideoUrl] = useState('');
-  const [status, setStatus] = useState<Status>({ type: 'idle', message: '' });
-  const [progress, setProgress] = useState(0);
+  const [videoUrls, setVideoUrls] = useState<string[]>(['']);
+  const [jobs, setJobs] = useState<JobStatus[]>([]);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [isClientLoaded, setIsClientLoaded] = useState(false);
   const tokenClientRef = useRef<any>(null);
 
@@ -46,8 +53,7 @@ export default function App() {
 
   const saveManualId = () => {
     if (manualClientId) {
-      setStatus({ type: 'success', message: 'کد کلاینت ذخیره شد!' });
-      setTimeout(() => setStatus({ type: 'idle', message: '' }), 2000);
+      alert('کد کلاینت ذخیره شد!');
     }
   };
 
@@ -70,10 +76,7 @@ export default function App() {
 
   const handleLogin = () => {
     if (!CLIENT_ID) {
-      setStatus({ 
-        type: 'error', 
-        message: 'لطفاً کد کلاینت گوگل را در کادر پایین وارد کنید.' 
-      });
+      alert('لطفاً کد کلاینت گوگل را در کادر پایین وارد کنید.');
       return;
     }
 
@@ -85,10 +88,9 @@ export default function App() {
           callback: (response: any) => {
             if (response.access_token) {
               setAccessToken(response.access_token);
-              setStatus({ type: 'success', message: 'با موفقیت به گوگل درایو متصل شد!' });
-              setTimeout(() => setStatus({ type: 'idle', message: '' }), 3000);
+              alert('با موفقیت به گوگل درایو متصل شد!');
             } else {
-              setStatus({ type: 'error', message: 'خطا در دریافت توکن از گوگل.' });
+              alert('خطا در دریافت توکن از گوگل.');
             }
           },
         });
@@ -96,101 +98,133 @@ export default function App() {
       tokenClientRef.current.requestAccessToken();
     } catch (error) {
       console.error(error);
-      setStatus({ type: 'error', message: 'خطا در راه‌اندازی ورود گوگل.' });
+      alert('خطا در راه‌اندازی ورود گوگل.');
     }
   };
 
   const handleLogout = () => {
     setAccessToken(null);
-    setStatus({ type: 'idle', message: 'با موفقیت خارج شدید.' });
+    alert('با موفقیت خارج شدید.');
   };
 
-  const processVideo = async () => {
-    if (!videoUrl) {
-      setStatus({ type: 'error', message: 'لطفاً لینک ویدیو را وارد کنید.' });
+  const addUrlField = () => setVideoUrls([...videoUrls, '']);
+  const removeUrlField = (index: number) => {
+    const newUrls = [...videoUrls];
+    newUrls.splice(index, 1);
+    setVideoUrls(newUrls.length > 0 ? newUrls : ['']);
+  };
+  const updateUrlField = (index: number, value: string) => {
+    const newUrls = [...videoUrls];
+    newUrls[index] = value;
+    setVideoUrls(newUrls);
+  };
+
+  const processVideos = async () => {
+    const urlsToProcess = videoUrls.map(u => u.trim()).filter(u => u.length > 0);
+    
+    if (urlsToProcess.length === 0) {
+      alert('لطفاً حداقل یک لینک معتبر وارد کنید.');
       return;
     }
 
     if (!accessToken) {
-      setStatus({ type: 'error', message: 'ابتدا به گوگل درایو متصل شوید.' });
+      alert('ابتدا به گوگل درایو متصل شوید.');
       return;
     }
 
+    const currentUrls = [...urlsToProcess];
+    setVideoUrls(['']); // Clear inputs
+    setIsSubmitting(true);
+
     try {
-      setStatus({ type: 'loading', message: 'درخواست ثبت شد. شروع پردازش در سرور...' });
-      setProgress(5);
-
-      const startRes = await axios.post('/api/process-video', {
-        videoUrl,
-        accessToken,
-      });
-
-      if (!startRes.data.success || !startRes.data.jobId) {
-        throw new Error('خطا در شروع عملیات.');
-      }
-
-      const jobId = startRes.data.jobId;
-      console.log('Started job:', jobId);
-
-      let retryCount = 0;
-      const pollInterval = setInterval(async () => {
+      for (const url of currentUrls) {
         try {
-          const statusRes = await axios.get(`/api/job-status/${jobId}`);
-          const job = statusRes.data;
-          retryCount = 0;
+          const startRes = await axios.post('/api/process-video', {
+            videoUrl: url,
+            accessToken,
+          });
 
-          if (job.status === 'success') {
-            clearInterval(pollInterval);
-            setStatus({ 
-              type: 'success', 
-              message: `عملیات با موفقیت انجام شد! فایل در درایو آپلود شد.`,
-              zipPassword: job.zipPassword
-            });
-            setProgress(100);
-            setVideoUrl('');
-          } else if (job.status === 'error') {
-            clearInterval(pollInterval);
-            // Translate some common error messages if needed
-            let msg = job.message;
-            if (msg === 'Failed to process video.') msg = 'پردازش ویدیو ناموفق بود.';
-            setStatus({ type: 'error', message: `${msg} ${job.details || ''}` });
-            setProgress(0);
-          } else {
-            // Update messages to Persian if possible or just use them
-            let displayMsg = job.message;
+          if (startRes.data.success && startRes.data.jobId) {
+            const jobId = startRes.data.jobId;
+            const newJob: JobStatus = {
+              id: jobId,
+              url: url,
+              status: 'loading',
+              message: 'در حال شروع...',
+              progress: 5
+            };
+            
+            setJobs(prev => [newJob, ...prev]);
+            startPolling(jobId);
+          }
+        } catch (error) {
+          console.error('Submit error for individual URL:', error);
+        }
+      }
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const startPolling = (jobId: string) => {
+    let retryCount = 0;
+    const interval = setInterval(async () => {
+      try {
+        const res = await axios.get(`/api/job-status/${jobId}`);
+        const data = res.data;
+        retryCount = 0;
+
+        setJobs(prev => prev.map(job => {
+          if (job.id === jobId) {
+            let displayMsg = data.message;
             if (displayMsg.includes('Analyzing source')) displayMsg = 'در حال تحلیل منبع...';
             if (displayMsg.includes('Initializing ZIP')) displayMsg = 'در حال آماده‌سازی فشرده‌سازی...';
             if (displayMsg.includes('Zipping & Transferring')) displayMsg = 'در حال زیپ کردن و انتقال... ' + displayMsg.split(':')[1];
             if (displayMsg.includes('Transfer active')) displayMsg = 'انتقال فعال است...';
 
-            setStatus({ type: 'loading', message: displayMsg });
-            setProgress(job.progress);
+            return {
+              ...job,
+              status: data.status,
+              progress: data.progress,
+              message: displayMsg,
+              zipPassword: data.zipPassword,
+              zipName: data.zipName,
+              details: data.details
+            };
           }
-        } catch (pollError) {
-          console.error('Polling error:', pollError);
-          retryCount++;
-          if (retryCount > 10) {
-            clearInterval(pollInterval);
-            setStatus({ type: 'error', message: 'ارتباط با سرور قطع شد. لطفاً دوباره تلاش کنید.' });
-          }
+          return job;
+        }));
+
+        if (data.status === 'success' || data.status === 'error') {
+          clearInterval(interval);
         }
-      }, 3000);
-
-      setTimeout(() => clearInterval(pollInterval), 1800000);
-
-    } catch (error: any) {
-      console.error('Frontend processing error:', error);
-      let errorMsg = 'خطایی در پردازش رخ داد.';
-      
-      if (error.code === 'ECONNABORTED') {
-        errorMsg = 'زمان پردازش طولانی شد. تا چند دقیقه دیگر گوگل درایو خود را چک کنید.';
-      } else if (error.message === 'Network Error') {
-        errorMsg = 'خطای شبکه: امکان اتصال به سرور نیست.';
+      } catch (err) {
+        retryCount++;
+        if (retryCount > 10) {
+          clearInterval(interval);
+          setJobs(prev => prev.map(job => 
+            job.id === jobId ? { ...job, status: 'error', message: 'قطع ارتباط با سرور' } : job
+          ));
+        }
       }
-      
-      setStatus({ type: 'error', message: errorMsg });
-      setProgress(0);
-    }
+    }, 3000);
+  };
+
+  const downloadAllPasswords = () => {
+    const completed = jobs.filter(j => j.status === 'success' && j.zipPassword);
+    if (completed.length === 0) return;
+
+    const content = completed
+      .map(j => `${j.zipName || 'unknown'}:${j.zipPassword}`)
+      .join('\n');
+
+    const blob = new Blob([content], { type: 'text/plain' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `passwords_${new Date().getTime()}.txt`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
   };
 
   return (
@@ -203,31 +237,31 @@ export default function App() {
       </div>
 
       <div className="relative z-10 max-w-3xl mx-auto px-6 py-12 md:py-20">
-        {/* Header */}
-        <header className="mb-12 text-center">
+        {/* Header - Improved Logo */}
+        <header className="mb-12 text-center flex flex-col items-center">
           <motion.div 
-            initial={{ opacity: 0, scale: 0.8 }}
-            animate={{ opacity: 1, scale: 1 }}
-            className="inline-flex items-center justify-center w-20 h-20 bg-slate-800 border border-slate-700/50 rounded-3xl shadow-2xl mb-8 group"
-          >
-            <FileArchive className="w-10 h-10 text-brand-primary group-hover:scale-110 transition-transform duration-500" />
-          </motion.div>
-          <motion.h1 
-            initial={{ opacity: 0, y: 10 }}
+            initial={{ opacity: 0, y: -20 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.1 }}
-            className="text-5xl font-display mb-4 bg-clip-text text-transparent bg-gradient-to-r from-white to-slate-400"
+            className="relative group cursor-default"
           >
-            زیپ‌کن برقی ⚡️
-          </motion.h1>
-          <motion.p 
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            transition={{ delay: 0.2 }}
-            className="text-slate-400 max-w-lg mx-auto text-lg"
-          >
-            ویدیوها رو بفرست به درایو، زیپ شده و با رمز خفن! 🚀
-          </motion.p>
+            {/* Glow effect */}
+            <div className="absolute inset-0 bg-brand-primary/20 blur-3xl group-hover:bg-brand-primary/30 transition-colors duration-700" />
+            
+            <div className="relative flex items-center justify-center w-24 h-24 bg-slate-900 border border-white/5 rounded-[2rem] shadow-2xl group-hover:border-brand-primary/30 transition-all duration-500 overflow-hidden">
+              {/* Inner gradient */}
+              <div className="absolute inset-0 bg-gradient-to-br from-brand-primary/10 via-transparent to-brand-secondary/10 opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
+              
+              <div className="relative">
+                <FileArchive className="w-10 h-10 text-brand-primary mb-1 transform group-hover:-translate-y-1 transition-transform duration-500" />
+                <div className="absolute -bottom-1 -right-1">
+                  <ShieldCheck className="w-5 h-5 text-brand-secondary fill-slate-900 group-hover:scale-110 transition-transform duration-500" />
+                </div>
+              </div>
+            </div>
+
+            {/* Accent lines */}
+            <div className="absolute -bottom-4 left-1/2 -translate-x-1/2 w-12 h-1 bg-gradient-to-r from-transparent via-brand-primary to-transparent rounded-full opacity-50" />
+          </motion.div>
         </header>
 
         {/* Main Card */}
@@ -246,7 +280,7 @@ export default function App() {
                   {accessToken && <div className="absolute inset-0 w-3 h-3 rounded-full bg-green-400 animate-ping opacity-75" />}
                 </div>
                 <span className="text-sm font-semibold tracking-wide text-slate-300">
-                  {accessToken ? 'اتصال به درایو برقراره ✅' : 'گوگل درایوت وصل نیست! 👇'}
+                  {accessToken ? 'اتصال به درایو برقرار است' : 'گوگل درایو متصل نیست'}
                 </span>
               </div>
               
@@ -275,129 +309,223 @@ export default function App() {
           <div className="p-8 md:p-12">
             <div className="space-y-8">
               <div>
-                <label htmlFor="video-url" className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">
-                  لینک ویدیو رو اینجا بچسبون 🔗
-                </label>
-                <div className="relative group">
-                  <input
-                    type="url"
-                    id="video-url"
-                    dir="ltr"
-                    placeholder="https://site.com/video.mp4"
-                    value={videoUrl}
-                    onChange={(e) => setVideoUrl(e.target.value)}
-                    className="w-full px-5 py-4 bg-slate-900/50 border border-white/10 rounded-2xl text-white placeholder:text-slate-700 focus:ring-2 focus:ring-brand-primary/50 focus:border-brand-primary transition-all outline-none"
-                  />
-                  <div className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-700 group-focus-within:text-brand-primary transition-colors">
-                    <Video className="w-6 h-6" />
+                <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-4 flex justify-between items-center">
+                  <div className="flex items-center gap-2">
+                    <span>لینک‌های ویدیو 🔗</span>
                   </div>
-                </div>
+                  <button 
+                    onClick={addUrlField}
+                    className="text-[10px] bg-white/5 hover:bg-white/10 text-slate-300 px-3 py-1 rounded-lg border border-white/10 transition-colors"
+                  >
+                    + افزودن لینک جدید
+                  </button>
+                </label>
                 
+                <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
+                  <AnimatePresence mode="popLayout">
+                    {videoUrls.map((url, index) => (
+                      <motion.div 
+                        key={index}
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, scale: 0.95 }}
+                        className="relative group"
+                      >
+                        <textarea
+                          dir="ltr"
+                          rows={2}
+                          placeholder="https://site.com/video-url..."
+                          value={url}
+                          onChange={(e) => updateUrlField(index, e.target.value)}
+                          className="w-full px-12 py-4 bg-slate-900/50 border border-white/10 rounded-2xl text-white placeholder:text-slate-700 focus:ring-2 focus:ring-brand-primary/50 focus:border-brand-primary transition-all outline-none resize-none text-sm"
+                        />
+                        <div className="absolute left-4 top-4 text-slate-700 group-focus-within:text-brand-primary transition-colors">
+                          <Video className="w-5 h-5" />
+                        </div>
+                        {videoUrls.length > 1 && (
+                          <button 
+                            onClick={() => removeUrlField(index)}
+                            className="absolute right-4 top-4 text-slate-700 hover:text-red-400 transition-colors p-1"
+                          >
+                            <XCircle className="w-5 h-5" />
+                          </button>
+                        )}
+                      </motion.div>
+                    ))}
+                  </AnimatePresence>
+                </div>
+
                 <div className="mt-4 p-4 bg-brand-primary/10 rounded-2xl border border-brand-primary/20">
-                  <p className="text-xs text-indigo-300 leading-relaxed">
-                    <span className="font-bold text-indigo-200 uppercase ml-1">فوت کوزه‌گری:</span> 
-                    اگه استخراج اتوماتیک پرید، از سایت‌های کمکی استفاده کن و <strong>لینک مستقیم mp4</strong> رو اینجا بذار. اینجوری هیچ‌کی نمیتونه جلوتو بگیره! 😎
+                  <p className="text-xs text-indigo-300 leading-relaxed text-center">
+                    <span className="font-bold text-indigo-200 uppercase ml-1">نکته امنیتی:</span> 
+                    لینک‌ها به صورت جداگانه پردازش می‌شوند. برای حفظ حریم خصوصی، فایل‌ها به صورت دو لایه زیپ شده و با پسورد محافظت می‌شوند.
                   </p>
                 </div>
               </div>
 
+              <div className="pt-4 border-t border-white/5 space-y-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <div className="w-1.5 h-1.5 rounded-full bg-brand-primary shadow-[0_0_8px_rgba(99,102,241,0.8)]" />
+                  <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">ابزارهای کمکی برای استخراج لینک مستقیم</h3>
+                </div>
+                
+                <div className="grid grid-cols-2 gap-3">
+                  <a 
+                    href="https://www.savethevideo.com/" 
+                    target="_blank" 
+                    rel="noopener noreferrer"
+                    className="flex items-center justify-between p-3 bg-slate-900/50 border border-white/5 rounded-xl hover:border-brand-primary/30 hover:bg-slate-800/80 transition-all group"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 bg-slate-800 rounded-lg group-hover:scale-110 transition-transform">
+                        <Video className="w-4 h-4 text-brand-primary" />
+                      </div>
+                      <div className="flex flex-col">
+                        <span className="text-[11px] font-bold text-slate-200">SaveTheVideo</span>
+                        <div className="flex items-center gap-1.5 mt-0.5">
+                          <span className="text-[9px] text-slate-500">استخراج لینک پورن‌هاب</span>
+                          <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shadow-[0_0_5px_rgba(251,191,36,0.5)]" />
+                          <span className="text-[9px] text-amber-200/70 font-medium">متوسط</span>
+                        </div>
+                      </div>
+                    </div>
+                    <ArrowUpRight className="w-3 h-3 text-slate-600 group-hover:text-brand-primary transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-all" />
+                  </a>
+
+                  <a 
+                    href="https://pornhubfans.com/" 
+                    target="_blank" 
+                    rel="noopener noreferrer"
+                    className="flex items-center justify-between p-3 bg-slate-900/50 border border-white/5 rounded-xl hover:border-brand-secondary/30 hover:bg-slate-800/80 transition-all group"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="p-2 bg-slate-800 rounded-lg group-hover:scale-110 transition-transform">
+                        <Video className="w-4 h-4 text-brand-secondary" />
+                      </div>
+                      <div className="flex flex-col">
+                        <span className="text-[11px] font-bold text-slate-200">PornhubFans</span>
+                        <div className="flex items-center gap-1.5 mt-0.5">
+                          <span className="text-[9px] text-slate-500">استخراج لینک پورن‌هاب</span>
+                          <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shadow-[0_0_5px_rgba(251,191,36,0.5)]" />
+                          <span className="text-[9px] text-amber-200/70 font-medium">متوسط</span>
+                        </div>
+                      </div>
+                    </div>
+                    <ArrowUpRight className="w-3 h-3 text-slate-600 group-hover:text-brand-secondary transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-all" />
+                  </a>
+                </div>
+              </div>
+
               <button
-                onClick={processVideo}
-                disabled={status.type === 'loading' || !accessToken}
+                onClick={processVideos}
+                disabled={!accessToken || !videoUrls.some(u => u.trim()) || isSubmitting}
                 className="relative w-full overflow-hidden group"
               >
-                <div className={`absolute inset-0 bg-gradient-to-r from-brand-primary to-brand-secondary transition-transform duration-500 group-hover:scale-105 ${status.type === 'loading' && 'animate-pulse'}`} />
+                <div className={`absolute inset-0 bg-gradient-to-r from-brand-primary to-brand-secondary transition-transform duration-500 group-hover:scale-105 ${isSubmitting ? 'animate-pulse' : ''}`} />
                 <div className="relative flex items-center justify-center gap-3 px-8 py-5 text-white font-display text-2xl active:scale-[0.98] transition-transform">
-                  {status.type === 'loading' ? (
-                    <Loader2 className="w-7 h-7 animate-spin" />
+                  {isSubmitting ? (
+                    <>
+                      <Loader2 className="w-7 h-7 animate-spin" />
+                      <span>در حال ثبت...</span>
+                    </>
                   ) : (
                     <>
-                      <span>بفرست بره تو درایو! 🚀</span>
+                      <span>بفرست بره تو درایو!</span>
                       <Upload className="w-5 h-5 group-hover:-translate-y-1 transition-transform" />
                     </>
                   )}
                 </div>
               </button>
 
-              {/* Progress Bar */}
-              <AnimatePresence>
-                {status.type === 'loading' && (
-                  <motion.div 
-                    initial={{ opacity: 0, height: 0 }}
-                    animate={{ opacity: 1, height: 'auto' }}
-                    exit={{ opacity: 0, height: 0 }}
-                    className="space-y-3 pt-2"
-                  >
-                    <div className="flex justify-between text-xs font-bold tracking-wider">
-                      <span className="text-slate-400 uppercase">{status.message}</span>
-                      <span className="text-brand-primary">{progress}%</span>
-                    </div>
-                    <div className="h-2 w-full bg-slate-900 rounded-full overflow-hidden border border-white/5">
-                      <motion.div 
-                        initial={{ width: 0 }}
-                        animate={{ width: `${progress}%` }}
-                        className="h-full bg-gradient-to-r from-brand-primary to-brand-secondary shadow-[0_0_15px_rgba(99,102,241,0.5)]"
-                      />
-                    </div>
-                  </motion.div>
+              {/* Jobs List */}
+              <div className="space-y-6">
+                {jobs.length > 0 && (
+                  <div className="flex items-center justify-between mb-2">
+                    <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest">لیست فایل‌های پردازشی</h3>
+                    {jobs.some(j => j.status === 'success') && (
+                      <button 
+                        onClick={downloadAllPasswords}
+                        className="text-[10px] bg-brand-secondary/20 hover:bg-brand-secondary/30 text-brand-secondary px-3 py-1.5 rounded-lg border border-brand-secondary/30 transition-colors font-bold uppercase tracking-wider"
+                      >
+                        دانلود تمام پسوردها (.txt)
+                      </button>
+                    )}
+                  </div>
                 )}
-              </AnimatePresence>
-
-              {/* Status Message */}
-              <AnimatePresence>
-                {status.message && status.type !== 'loading' && (
-                  <motion.div
-                    initial={{ opacity: 0, scale: 0.95 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    exit={{ opacity: 0, scale: 0.95 }}
-                    className={`flex flex-col gap-4 p-5 rounded-2xl border ${
-                      status.type === 'success' 
-                        ? 'bg-green-500/10 border-green-500/20 text-green-300' 
-                        : 'bg-red-500/10 border-red-500/20 text-red-300'
-                    }`}
-                  >
-                    <div className="flex items-start gap-4">
-                      <div className="mt-1">
-                        {status.type === 'success' ? (
-                          <CheckCircle className="w-6 h-6" />
-                        ) : (
-                          <AlertCircle className="w-6 h-6" />
-                        )}
-                      </div>
-                      <div>
-                        <p className="font-bold text-sm uppercase tracking-widest mb-1">
-                          {status.type === 'success' ? 'عملیات با موفقیت پایان یافت' : 'خطا در پردازش'}
-                        </p>
-                        <p className="text-sm opacity-90 leading-relaxed">{status.message}</p>
-                      </div>
-                    </div>
-
-                    {status.type === 'success' && status.zipPassword && (
-                      <div className="mt-4 p-6 bg-slate-900/80 rounded-2xl border border-white/10 space-y-4">
-                        <div>
-                          <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">رمز عبور فایل زیپ (بسیار مهم):</p>
-                          <div className="flex items-center gap-3 bg-slate-800 p-4 rounded-xl border border-white/5 group">
-                            <code className="text-lg font-mono text-brand-secondary break-all flex-1 underline decoration-brand-secondary/30">{status.zipPassword}</code>
-                            <button 
-                              onClick={() => navigator.clipboard.writeText(status.zipPassword!)}
-                              className="p-2 hover:bg-white/10 rounded-lg transition-colors text-slate-400 hover:text-white"
-                              title="کپی رمز عبور"
-                            >
-                              <CheckCircle className="w-5 h-5" />
-                            </button>
+                
+                <AnimatePresence mode="popLayout">
+                  {jobs.map((job) => (
+                    <motion.div
+                      key={job.id}
+                      initial={{ opacity: 0, x: -20 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      exit={{ opacity: 0, scale: 0.95 }}
+                      className={`p-5 rounded-[1.5rem] border ${
+                        job.status === 'success' ? 'bg-green-500/5 border-green-500/20' :
+                        job.status === 'error' ? 'bg-red-500/5 border-red-500/20' :
+                        'bg-slate-900/40 border-white/5'
+                      }`}
+                    >
+                      <div className="flex flex-col gap-4">
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="flex-1 min-w-0">
+                            <p className="text-[10px] font-mono text-slate-500 truncate mb-1" dir="ltr">{job.url}</p>
+                            <p className="text-xs font-bold text-slate-200">{job.message}</p>
+                          </div>
+                          <div className="shrink-0">
+                            {job.status === 'loading' && <Loader2 className="w-5 h-5 animate-spin text-brand-primary" />}
+                            {job.status === 'success' && <CheckCircle className="w-5 h-5 text-green-400" />}
+                            {job.status === 'error' && <AlertCircle className="w-5 h-5 text-red-400" />}
                           </div>
                         </div>
-                        <div className="bg-orange-500/10 border border-orange-500/20 p-4 rounded-xl flex items-start gap-3">
-                          <AlertCircle className="w-5 h-5 text-orange-400 mt-0.5" />
-                          <p className="text-xs text-orange-200/80 leading-relaxed">
-                            <span className="font-bold text-orange-300">هشدار امنیتی:</span> این رمز عبور در هیچ کجا ذخیره نمی‌شود. لطفاً همین الان آن را در جایی امن یادداشت یا ذخیره کنید. بدون این رمز، باز کردن فایل زیپ غیرممکن خواهد بود.
+
+                        {job.status === 'loading' && (
+                          <div className="space-y-2">
+                            <div className="h-1.5 w-full bg-slate-800 rounded-full overflow-hidden border border-white/5">
+                              <motion.div 
+                                initial={{ width: 0 }}
+                                animate={{ width: `${job.progress}%` }}
+                                className="h-full bg-gradient-to-r from-brand-primary to-brand-secondary"
+                              />
+                            </div>
+                            <div className="flex justify-end">
+                              <span className="text-[10px] font-mono text-slate-500">{job.progress}%</span>
+                            </div>
+                          </div>
+                        )}
+
+                        {job.status === 'success' && job.zipPassword && (
+                          <div className="space-y-3 pt-2 border-t border-white/5">
+                            <div className="flex items-center justify-between gap-4">
+                              <div className="flex-1">
+                                <p className="text-[9px] font-bold text-slate-500 uppercase tracking-widest mb-1">نام فایل و رمز عبور:</p>
+                                <div className="flex items-center gap-2 bg-slate-900/80 px-3 py-2 rounded-xl border border-white/5">
+                                  <code className="text-[10px] font-mono text-green-400 truncate flex-1">{job.zipName || 'File.zip'}</code>
+                                  <span className="text-slate-700">|</span>
+                                  <code className="text-xs font-mono text-brand-secondary">{job.zipPassword}</code>
+                                </div>
+                              </div>
+                              <button 
+                                onClick={() => navigator.clipboard.writeText(`${job.zipName || 'File.zip'}: ${job.zipPassword}`)}
+                                className="p-2 hover:bg-white/5 rounded-lg transition-colors text-slate-500 hover:text-white"
+                                title="کپی مشخصات"
+                              >
+                                <CheckCircle className="w-4 h-4" />
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        {job.status === 'error' && (
+                          <p className="text-[10px] text-red-400/80 bg-red-400/5 p-2 rounded-lg border border-red-400/10 underline decoration-red-400/20">
+                            {job.details || 'خطای نامشخص در سیستم'}
                           </p>
-                        </div>
+                        )}
                       </div>
-                    )}
-                  </motion.div>
-                )}
-              </AnimatePresence>
+                    </motion.div>
+                  ))}
+                </AnimatePresence>
+              </div>
             </div>
           </div>
 
@@ -409,8 +537,6 @@ export default function App() {
             </div>
             <div className="flex items-center gap-2">
               <span className="opacity-50" dir="ltr">v1.2.0</span>
-              <span className="w-1 h-1 bg-slate-700 rounded-full" />
-              <span dir="ltr">GDRIVE_API_v3</span>
             </div>
           </div>
         </motion.div>
