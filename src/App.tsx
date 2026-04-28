@@ -5,7 +5,6 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
-import JSZip from 'jszip';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   Download, 
@@ -31,12 +30,12 @@ declare const google: any;
 interface JobStatus {
   id: string;
   url: string;
-  status: 'loading' | 'success' | 'resumed' | 'error' | 'idle';
+  status: 'loading' | 'success' | 'resumed' | 'error' | 'idle' | 'paused';
   message: string;
   progress: number;
-  zipPassword?: string;
-  zipName?: string;
   details?: string;
+  speed?: string;
+  remainingTime?: string;
 }
 
 export default function App() {
@@ -48,8 +47,7 @@ export default function App() {
   const [isClientLoaded, setIsClientLoaded] = useState(false);
   const tokenClientRef = useRef<any>(null);
 
-  const envClientId = (import.meta as any).env.VITE_GOOGLE_CLIENT_ID;
-  const CLIENT_ID = manualClientId || envClientId;
+  const CLIENT_ID = manualClientId;
 
   const saveManualId = () => {
     if (manualClientId) {
@@ -187,9 +185,9 @@ export default function App() {
               status: data.status,
               progress: data.progress,
               message: displayMsg,
-              zipPassword: data.zipPassword,
-              zipName: data.zipName,
-              details: data.details
+              details: data.details,
+              speed: data.speed,
+              remainingTime: data.remainingTime
             };
           }
           return job;
@@ -210,22 +208,6 @@ export default function App() {
     }, 3000);
   };
 
-  const downloadAllPasswords = () => {
-    const completed = jobs.filter(j => j.status === 'success' && j.zipPassword);
-    if (completed.length === 0) return;
-
-    const content = completed
-      .map(j => `${j.zipName || 'unknown'}:${j.zipPassword}`)
-      .join('\n');
-
-    const blob = new Blob([content], { type: 'text/plain' });
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-    link.download = `passwords_${new Date().getTime()}.txt`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
 
   return (
     <div className="relative min-h-screen bg-surface-900 text-slate-200 font-sans overflow-hidden">
@@ -308,61 +290,6 @@ export default function App() {
           {/* Process Section */}
           <div className="p-8 md:p-12">
             <div className="space-y-8">
-              <div>
-                <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-4 flex justify-between items-center">
-                  <div className="flex items-center gap-2">
-                    <span>لینک‌های ویدیو 🔗</span>
-                  </div>
-                  <button 
-                    onClick={addUrlField}
-                    className="text-[10px] bg-white/5 hover:bg-white/10 text-slate-300 px-3 py-1 rounded-lg border border-white/10 transition-colors"
-                  >
-                    + افزودن لینک جدید
-                  </button>
-                </label>
-                
-                <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
-                  <AnimatePresence mode="popLayout">
-                    {videoUrls.map((url, index) => (
-                      <motion.div 
-                        key={index}
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, scale: 0.95 }}
-                        className="relative group"
-                      >
-                        <textarea
-                          dir="ltr"
-                          rows={2}
-                          placeholder="https://site.com/video-url..."
-                          value={url}
-                          onChange={(e) => updateUrlField(index, e.target.value)}
-                          className="w-full px-12 py-4 bg-slate-900/50 border border-white/10 rounded-2xl text-white placeholder:text-slate-700 focus:ring-2 focus:ring-brand-primary/50 focus:border-brand-primary transition-all outline-none resize-none text-sm"
-                        />
-                        <div className="absolute left-4 top-4 text-slate-700 group-focus-within:text-brand-primary transition-colors">
-                          <Video className="w-5 h-5" />
-                        </div>
-                        {videoUrls.length > 1 && (
-                          <button 
-                            onClick={() => removeUrlField(index)}
-                            className="absolute right-4 top-4 text-slate-700 hover:text-red-400 transition-colors p-1"
-                          >
-                            <XCircle className="w-5 h-5" />
-                          </button>
-                        )}
-                      </motion.div>
-                    ))}
-                  </AnimatePresence>
-                </div>
-
-                <div className="mt-4 p-4 bg-brand-primary/10 rounded-2xl border border-brand-primary/20">
-                  <p className="text-xs text-indigo-300 leading-relaxed text-center">
-                    <span className="font-bold text-indigo-200 uppercase ml-1">نکته امنیتی:</span> 
-                    لینک‌ها به صورت جداگانه پردازش می‌شوند. برای حفظ حریم خصوصی، فایل‌ها به صورت دو لایه زیپ شده و با پسورد محافظت می‌شوند.
-                  </p>
-                </div>
-              </div>
-
               <div className="pt-4 border-t border-white/5 space-y-4">
                 <div className="flex items-center gap-2 mb-2">
                   <div className="w-1.5 h-1.5 rounded-full bg-brand-primary shadow-[0_0_8px_rgba(99,102,241,0.8)]" />
@@ -416,6 +343,60 @@ export default function App() {
                 </div>
               </div>
 
+              <div>
+                <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-4 flex justify-between items-center">
+                  <div className="flex items-center gap-2">
+                    <span>لینک‌های ویدیو 🔗</span>
+                  </div>
+                  <button 
+                    onClick={addUrlField}
+                    className="text-[10px] bg-white/5 hover:bg-white/10 text-slate-300 px-3 py-1 rounded-lg border border-white/10 transition-colors"
+                  >
+                    + افزودن لینک جدید
+                  </button>
+                </label>
+                
+                <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
+                  <AnimatePresence mode="popLayout">
+                    {videoUrls.map((url, index) => (
+                      <motion.div 
+                        key={index}
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        exit={{ opacity: 0, scale: 0.95 }}
+                        className="relative group"
+                      >
+                        <textarea
+                          dir="ltr"
+                          rows={2}
+                          placeholder="https://site.com/video-url..."
+                          value={url}
+                          onChange={(e) => updateUrlField(index, e.target.value)}
+                          className="w-full px-12 py-4 bg-slate-900/50 border border-white/10 rounded-2xl text-white placeholder:text-slate-700 focus:ring-2 focus:ring-brand-primary/50 focus:border-brand-primary transition-all outline-none resize-none text-sm"
+                        />
+                        <div className="absolute left-4 top-4 text-slate-700 group-focus-within:text-brand-primary transition-colors">
+                          <Video className="w-5 h-5" />
+                        </div>
+                        {videoUrls.length > 1 && (
+                          <button 
+                            onClick={() => removeUrlField(index)}
+                            className="absolute right-4 top-4 text-slate-700 hover:text-red-400 transition-colors p-1"
+                          >
+                            <XCircle className="w-5 h-5" />
+                          </button>
+                        )}
+                      </motion.div>
+                    ))}
+                  </AnimatePresence>
+                </div>
+
+                <div className="mt-4 p-4 bg-brand-primary/10 rounded-2xl border border-brand-primary/20">
+                  <p className="text-xs text-indigo-300 leading-relaxed text-center">
+                    تمامی ویدیوها مستقیماً و با بالاترین سرعت ممکن به گوگل درایو شما منتقل می‌شوند.
+                  </p>
+                </div>
+              </div>
+
               <button
                 onClick={processVideos}
                 disabled={!accessToken || !videoUrls.some(u => u.trim()) || isSubmitting}
@@ -442,14 +423,6 @@ export default function App() {
                 {jobs.length > 0 && (
                   <div className="flex items-center justify-between mb-2">
                     <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest">لیست فایل‌های پردازشی</h3>
-                    {jobs.some(j => j.status === 'success') && (
-                      <button 
-                        onClick={downloadAllPasswords}
-                        className="text-[10px] bg-brand-secondary/20 hover:bg-brand-secondary/30 text-brand-secondary px-3 py-1.5 rounded-lg border border-brand-secondary/30 transition-colors font-bold uppercase tracking-wider"
-                      >
-                        دانلود تمام پسوردها (.txt)
-                      </button>
-                    )}
                   </div>
                 )}
                 
@@ -469,7 +442,7 @@ export default function App() {
                       <div className="flex flex-col gap-4">
                         <div className="flex items-start justify-between gap-4">
                           <div className="flex-1 min-w-0">
-                            <p className="text-[10px] font-mono text-slate-500 truncate mb-1" dir="ltr">{job.url}</p>
+                            <p className="text-[10px] font-mono text-slate-500 truncate mb-1" dir="ltr">{job.status !== 'loading' ? job.url : 'درحال پردازش...'}</p>
                             <p className="text-xs font-bold text-slate-200">{job.message}</p>
                           </div>
                           <div className="shrink-0">
@@ -480,7 +453,30 @@ export default function App() {
                         </div>
 
                         {job.status === 'loading' && (
-                          <div className="space-y-2">
+                          <div className="space-y-3">
+                            <div className="flex items-center justify-between text-[10px] text-slate-400 mb-1">
+                              <span>وضعیت: {job.message}</span>
+                              <div className="flex gap-2">
+                                <button
+                                  onClick={() => fetch(`/api/job-control/${job.id}`, { method: 'POST', body: JSON.stringify({ action: 'pause' }), headers: {'Content-Type': 'application/json'} })}
+                                  className="hover:text-white transition-colors underline"
+                                >
+                                  توقف
+                                </button>
+                                <button
+                                  onClick={() => fetch(`/api/job-control/${job.id}`, { method: 'POST', body: JSON.stringify({ action: 'resume' }), headers: {'Content-Type': 'application/json'} })}
+                                  className="hover:text-white transition-colors underline"
+                                >
+                                  ادامه
+                                </button>
+                                <button
+                                  onClick={() => fetch(`/api/job-control/${job.id}`, { method: 'POST', body: JSON.stringify({ action: 'cancel' }), headers: {'Content-Type': 'application/json'} })}
+                                  className="hover:text-red-400 transition-colors underline"
+                                >
+                                  لغو
+                                </button>
+                              </div>
+                            </div>
                             <div className="h-1.5 w-full bg-slate-800 rounded-full overflow-hidden border border-white/5">
                               <motion.div 
                                 initial={{ width: 0 }}
@@ -488,33 +484,24 @@ export default function App() {
                                 className="h-full bg-gradient-to-r from-brand-primary to-brand-secondary"
                               />
                             </div>
-                            <div className="flex justify-end">
-                              <span className="text-[10px] font-mono text-slate-500">{job.progress}%</span>
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-3">
+                                {job.speed && (
+                                  <span className="text-[10px] font-mono text-brand-primary bg-brand-primary/10 px-2 py-0.5 rounded-lg border border-brand-primary/20">
+                                    {job.speed}
+                                  </span>
+                                )}
+                                {job.remainingTime && (
+                                  <span className="text-[10px] font-mono text-slate-400 bg-white/5 px-2 py-0.5 rounded-lg border border-white/5">
+                                    {job.remainingTime} باقی‌مانده
+                                  </span>
+                                )}
+                              </div>
+                              <span className="text-[10px] font-mono text-slate-300 font-bold">{job.progress}%</span>
                             </div>
                           </div>
                         )}
 
-                        {job.status === 'success' && job.zipPassword && (
-                          <div className="space-y-3 pt-2 border-t border-white/5">
-                            <div className="flex items-center justify-between gap-4">
-                              <div className="flex-1">
-                                <p className="text-[9px] font-bold text-slate-500 uppercase tracking-widest mb-1">نام فایل و رمز عبور:</p>
-                                <div className="flex items-center gap-2 bg-slate-900/80 px-3 py-2 rounded-xl border border-white/5">
-                                  <code className="text-[10px] font-mono text-green-400 truncate flex-1">{job.zipName || 'File.zip'}</code>
-                                  <span className="text-slate-700">|</span>
-                                  <code className="text-xs font-mono text-brand-secondary">{job.zipPassword}</code>
-                                </div>
-                              </div>
-                              <button 
-                                onClick={() => navigator.clipboard.writeText(`${job.zipName || 'File.zip'}: ${job.zipPassword}`)}
-                                className="p-2 hover:bg-white/5 rounded-lg transition-colors text-slate-500 hover:text-white"
-                                title="کپی مشخصات"
-                              >
-                                <CheckCircle className="w-4 h-4" />
-                              </button>
-                            </div>
-                          </div>
-                        )}
 
                         {job.status === 'error' && (
                           <p className="text-[10px] text-red-400/80 bg-red-400/5 p-2 rounded-lg border border-red-400/10 underline decoration-red-400/20">

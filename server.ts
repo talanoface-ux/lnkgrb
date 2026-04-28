@@ -2,23 +2,8 @@ import express from 'express';
 import path from 'path';
 import axios from 'axios';
 import { google } from 'googleapis';
-import archiver from 'archiver';
-import zipEncryptable from 'archiver-zip-encryptable';
 import { PassThrough } from 'stream';
 import * as cheerio from 'cheerio';
-
-// Register encryption format
-archiver.registerFormat('zip-encryptable', zipEncryptable);
-
-// Helper for random passwords
-function generateSecurePassword(length = 16) {
-  const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()_+";
-  let retVal = "";
-  for (let i = 0; i < length; ++i) {
-    retVal += charset.charAt(Math.floor(Math.random() * charset.length));
-  }
-  return retVal;
-}
 
 // Lazy load Vite only when needed (saves startup time on Vercel)
 async function getViteServer(options: any) {
@@ -187,14 +172,15 @@ async function extractVideoUrl(pageUrl: string): Promise<{ url: string, filename
 
 // Global job store
 const jobs = new Map<string, {
-  status: 'loading' | 'success' | 'resumed' | 'error' | 'idle';
+  status: 'loading' | 'success' | 'resumed' | 'error' | 'idle' | 'paused';
   message: string;
   progress: number;
   details?: string;
   fileId?: string;
-  zipPassword?: string;
-  zipName?: string;
   timestamp: number;
+  speed?: string;
+  remainingTime?: string;
+  sourceStream?: any; 
 }>();
 
 // Cleanup old jobs every hour (only on persistent servers)
@@ -244,6 +230,31 @@ app.get('/api/job-status/:id', (req, res) => {
 });
 
 // API Route: Process Video (Download -> Zip -> Upload) - Now non-blocking
+app.post('/api/job-control/:id', (req, res) => {
+  const { action } = req.body;
+  const job = jobs.get(req.params.id);
+  if (!job) return res.status(404).json({ error: 'Job not found' });
+
+  if (action === 'pause' && job.status === 'loading') {
+    job.status = 'paused';
+    if (job.sourceStream) job.sourceStream.pause();
+    job.message = 'موقتاً متوقف شد';
+  } else if (action === 'resume' && job.status === 'paused') {
+    job.status = 'loading';
+    if (job.sourceStream) job.sourceStream.resume();
+    job.message = 'در حال ادامه...';
+  } else if (action === 'cancel') {
+    job.status = 'error'; // We'll treat canceled as an error state for now to reuse existing UI logic
+    if (job.sourceStream) job.sourceStream.destroy();
+    job.message = 'کنسل شد';
+    job.details = 'کاربر درخواست توقف و حذف عملیات را داد.';
+    job.progress = 0;
+  }
+  
+  res.json({ success: true, status: job.status });
+});
+
+// API Route: Process Video (Download -> Zip -> Upload) - Now non-blocking
 app.post('/api/process-video', async (req, res) => {
   console.log('Received process-video request');
   let { videoUrl, accessToken } = req.body;
@@ -254,13 +265,11 @@ app.post('/api/process-video', async (req, res) => {
 
   videoUrl = videoUrl.trim();
   const jobId = Math.random().toString(36).substring(2, 15);
-  const password = generateSecurePassword(); 
 
   jobs.set(jobId, { 
     status: 'loading', 
     message: 'Starting process...', 
     progress: 10,
-    zipPassword: password,
     timestamp: Date.now()
   });
 
@@ -318,8 +327,7 @@ app.post('/api/process-video', async (req, res) => {
         }
       }
 
-      let actualSize = 0;
-      jobs.set(jobId, { ...jobs.get(jobId)!, progress: 40, message: 'Initializing ZIP transfer...' });
+      jobs.set(jobId, { ...jobs.get(jobId)!, progress: 40, message: 'Initializing upload...' });
 
       // 2. Setup Google Drive Client
       console.log('Setting up Drive client...');
@@ -327,57 +335,12 @@ app.post('/api/process-video', async (req, res) => {
       auth.setCredentials({ access_token: accessToken });
       const drive = google.drive({ version: 'v3', auth });
       
-      // 3. Setup Streams
-      console.log('Setting up Archive pipeline (Double-Zip for privacy)...');
-      const zipStream = new PassThrough({ highWaterMark: 1 * 1024 * 1024 }); 
-      
-      // Layer 1: Outer Archive (Encrypted)
-      const outerArchive = archiver('zip-encryptable' as any, { 
-        zlib: { level: 0 }, 
-        password: password
-      } as any);
-
-      // Layer 2: Inner Archive (Plain - hiding behind encryption)
-      const innerArchive = archiver('zip', { zlib: { level: 0 } });
-
-      // Handle archive errors early
-      outerArchive.on('error', (err) => {
-        console.error('Outer Archive Error:', err);
-        jobs.set(jobId, { ...jobs.get(jobId)!, status: 'error', message: 'خطای فشرده‌سازی لایه بیرونی', details: err.message, progress: 0, timestamp: Date.now() });
-      });
-      innerArchive.on('error', (err) => {
-        console.error('Inner Archive Error:', err);
-        jobs.set(jobId, { ...jobs.get(jobId)!, status: 'error', message: 'خطای فشرده‌سازی لایه داخلی', details: err.message, progress: 0, timestamp: Date.now() });
-      });
-
-      const progressTracker = new PassThrough({ highWaterMark: 1 * 1024 * 1024 });
-      let bytesProcessed = 0;
-      
-      progressTracker.on('data', (chunk) => {
-        bytesProcessed += chunk.length;
-        const mb = (bytesProcessed / 1024 / 1024).toFixed(1);
-        const currentJob = jobs.get(jobId);
-        if (currentJob && currentJob.status === 'loading') {
-          const progressVal = actualSize > 0 
-            ? 50 + Math.min(49, (bytesProcessed / actualSize) * 49)
-            : 50 + Math.min(45, (bytesProcessed / 500000000) * 45);
-
-          jobs.set(jobId, { 
-            ...currentJob, 
-            message: `در حال انتقال: ${mb} مگابایت...`,
-            progress: Math.floor(progressVal)
-          });
-        }
-      });
-
-      outerArchive.pipe(progressTracker).pipe(zipStream);
-
-      // 4. Download video as stream
+      // 3. Download video as stream
       console.log('Initiating video download stream from:', finalDownloadUrl);
       
       const config: any = { 
         responseType: 'stream',
-        timeout: 45000, 
+        timeout: 0, 
         maxRedirects: 10,
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
@@ -396,6 +359,10 @@ app.post('/api/process-video', async (req, res) => {
       console.log('Axios request sent, waiting for response...');
       const videoResponse = await axios.get(finalDownloadUrl, config);
 
+      // Store stream
+      const job = jobs.get(jobId);
+      if (job) jobs.set(jobId, { ...job, sourceStream: videoResponse.data });
+
       if (videoResponse.status >= 400) {
         console.error('Video request failed with status:', videoResponse.status);
         jobs.set(jobId, { ...jobs.get(jobId)!, status: 'error', message: 'خطای منبع', details: `سایت منبع خطای ${videoResponse.status} داد.`, progress: 0, timestamp: Date.now() });
@@ -405,7 +372,6 @@ app.post('/api/process-video', async (req, res) => {
 
       const contentType = String(videoResponse.headers['content-type'] || '').toLowerCase();
       const contentDisposition = String(videoResponse.headers['content-disposition'] || '').toLowerCase();
-      actualSize = parseInt(String(videoResponse.headers['content-length'] || '0'));
       
       const isHtml = contentType.includes('text/html') || contentType.includes('application/xml') || contentType.includes('text/xml');
       
@@ -422,7 +388,7 @@ app.post('/api/process-video', async (req, res) => {
         return;
       }
 
-      jobs.set(jobId, { ...jobs.get(jobId)!, progress: 50, message: 'در حال دریافت و زیپ کردن استریم ویدیو...' });
+      jobs.set(jobId, { ...jobs.get(jobId)!, progress: 50, message: 'در حال انتقال استریم ویدیو به درایو...' });
 
       if (contentDisposition.includes('filename=')) {
         const match = contentDisposition.match(/filename="?([^";]+)"?/);
@@ -434,43 +400,51 @@ app.post('/api/process-video', async (req, res) => {
         }
       }
 
-      console.log(`Appending stream to inner archive. Filename: ${finalFileName}`);
+      console.log(`Uploading stream to drive. Filename: ${finalFileName}`);
 
-      const streamToAppend = videoResponse.data;
+      // 4. Upload stream to Google Drive
+      const totalSize = parseInt(String(videoResponse.headers['content-length'] || '0'), 10);
+      let bytesProcessed = 0;
+      const startTime = Date.now();
       
-      streamToAppend.on('error', (err: any) => {
-        console.error('Input stream error:', err);
-        jobs.set(jobId, { ...jobs.get(jobId)!, status: 'error', message: 'قطع اتصال', details: 'ارتباط با منبع ویدیو قطع شد.', progress: 0, timestamp: Date.now() });
-        outerArchive.abort();
-        innerArchive.abort();
+      const progressStream = new PassThrough();
+      progressStream.on('data', (chunk) => {
+        bytesProcessed += chunk.length;
+        if (totalSize > 0) {
+          const percentage = Math.floor((bytesProcessed / totalSize) * 100);
+          const elapsed = (Date.now() - startTime) / 1000;
+          const speedBytesPerSec = bytesProcessed / elapsed;
+          const speedMBPerSec = (speedBytesPerSec / (1024 * 1024)).toFixed(1);
+          const remainingBytes = totalSize - bytesProcessed;
+          const remainingTimeSec = Math.floor(remainingBytes / speedBytesPerSec);
+          
+          const mbTransferred = (bytesProcessed / (1024 * 1024)).toFixed(1);
+          const mbTotal = (totalSize / (1024 * 1024)).toFixed(1);
+
+          // Update once every 500ms
+          const job = jobs.get(jobId);
+          if (job && job.status === 'loading') {
+            jobs.set(jobId, { 
+              ...job,
+              progress: percentage,
+              message: `${mbTransferred} / ${mbTotal} MB`,
+              speed: `${speedMBPerSec} MB/s`,
+              remainingTime: remainingTimeSec > 0 ? `${remainingTimeSec}s` : '...'
+            });
+          }
+        }
       });
-
-      // Part 1: Add video to inner archive
-      innerArchive.append(streamToAppend, { name: finalFileName });
-      innerArchive.finalize();
-
-      // Part 2: Add inner archive as a file into outer encrypted archive
-      outerArchive.append(innerArchive, { name: 'Package_Content.zip' });
-      outerArchive.finalize();
-
-      // 5. Upload ZIP stream to Google Drive
-      const zipDisplayId = Math.floor(10000000 + Math.random() * 90000000).toString();
-      const finalZipName = `${zipDisplayId}.zip`;
-
-      // Update name in memory right away so frontend can see it
-      const currentJob = jobs.get(jobId);
-      if (currentJob) {
-        jobs.set(jobId, { ...currentJob, zipName: finalZipName });
-      }
+      
+      console.log(`Uploading stream to drive. Filename: ${finalFileName}`);
 
       const driveResponse: any = await drive.files.create({
         requestBody: {
-          name: finalZipName,
-          mimeType: 'application/zip',
+          name: finalFileName,
+          mimeType: 'video/mp4',
         },
         media: {
-          mimeType: 'application/zip',
-          body: zipStream,
+          mimeType: 'video/mp4',
+          body: videoResponse.data.pipe(progressStream),
         }
       }, {
         timeout: 0,
@@ -481,10 +455,9 @@ app.post('/api/process-video', async (req, res) => {
       jobs.set(jobId, { 
         ...jobs.get(jobId)!,
         status: 'success', 
-        message: 'ویدیو با موفقیت فشرده و در درایو آپلود شد!', 
+        message: 'ویدیو با موفقیت به درایو آپلود شد!', 
         progress: 100, 
         fileId: fileId,
-        zipPassword: password, 
         timestamp: Date.now()
       });
 
