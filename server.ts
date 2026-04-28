@@ -463,13 +463,17 @@ app.post('/api/process-video', async (req, res) => {
 
     } catch (error: any) {
       console.error('Job error:', error.message);
-      jobs.set(jobId, { 
-        status: 'error', 
-        message: 'Failed to process video.', 
-        details: error.message, 
-        progress: 0,
-        timestamp: Date.now()
-      });
+      const currentJob = jobs.get(jobId);
+      // Don't overwrite if it was manually cancelled or entered error state already
+      if (currentJob && currentJob.status !== 'error') {
+        jobs.set(jobId, { 
+          status: 'error', 
+          message: 'Failed to process video.', 
+          details: error.message, 
+          progress: 0,
+          timestamp: Date.now()
+        });
+      }
     }
   })();
 });

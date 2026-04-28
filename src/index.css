@@ -6,27 +6,26 @@
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
   --font-display: "Lalezar", cursive;
   
-  --color-brand-primary: #6366f1;
-  --color-brand-secondary: #a855f7;
-  --color-surface-900: #0f172a;
-  --color-surface-800: #1e293b;
-  --color-surface-700: #334155;
+  --color-brand-primary: #dc2626;
+  --color-brand-secondary: #f97316;
+  --color-surface-900: #050505;
+  --color-surface-800: #120808;
+  --color-surface-700: #2a0a0a;
 }
 
 @layer base {
   body {
-    @apply bg-surface-900 text-slate-200 antialiased selection:bg-brand-primary/30;
+    @apply bg-surface-900 text-slate-300 antialiased selection:bg-brand-primary/30;
     direction: rtl;
   }
 }
 
-@keyframes mesh {
-  0% { transform: translate(0, 0) scale(1); }
-  33% { transform: translate(5%, 5%) scale(1.1); }
-  66% { transform: translate(-5%, 8%) scale(0.9); }
-  100% { transform: translate(0, 0) scale(1); }
+@keyframes inferno {
+  0% { transform: translate(0, 0) scale(1) rotate(0deg); opacity: 0.3; }
+  50% { transform: translate(2%, 2%) scale(1.05) rotate(1deg); opacity: 0.4; }
+  100% { transform: translate(1%, -1%) scale(1) rotate(-1deg); opacity: 0.3; }
 }
 
-.animate-mesh {
-  animation: mesh 20s ease-in-out infinite alternate;
+.animate-inferno {
+  animation: inferno 15s ease-in-out infinite alternate;
 }

@@ -18,7 +18,9 @@ import {
   ShieldCheck,
   Video,
   XCircle,
-  ArrowUpRight
+  ArrowUpRight,
+  Flame,
+  Skull
 } from 'lucide-react';
 
 // Google Drive API Scopes
@@ -208,61 +210,100 @@ export default function App() {
     }, 3000);
   };
 
+  const handleJobControl = async (jobId: string, action: 'pause' | 'resume' | 'cancel') => {
+    try {
+      // Optimistic update
+      setJobs(prev => prev.map(job => {
+        if (job.id === jobId) {
+          if (action === 'pause') return { ...job, status: 'paused', message: 'در حال متوقف کردن...' };
+          if (action === 'resume') return { ...job, status: 'loading', message: 'در حال ادامه...' };
+          if (action === 'cancel') return { ...job, status: 'error', message: 'در حال لغو...' };
+        }
+        return job;
+      }));
+
+      await axios.post(`/api/job-control/${jobId}`, { action });
+    } catch (error) {
+      console.error(`Error controlling job ${jobId}:`, error);
+    }
+  };
+
 
   return (
-    <div className="relative min-h-screen bg-surface-900 text-slate-200 font-sans overflow-hidden">
-      {/* Animated Background */}
-      <div className="absolute inset-0 z-0 pointer-events-none">
-        <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] rounded-full bg-brand-primary/20 blur-[120px] animate-mesh" />
-        <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] rounded-full bg-brand-secondary/20 blur-[120px] animate-mesh" style={{ animationDelay: '-5s' }} />
-        <div className="absolute top-[20%] right-[10%] w-[30%] h-[30%] rounded-full bg-indigo-500/10 blur-[100px] animate-mesh" style={{ animationDelay: '-10s' }} />
+    <div className="relative min-h-screen bg-surface-900 text-slate-300 font-sans overflow-hidden">
+      {/* Animated Background - Devil Inferno */}
+      <div className="absolute inset-0 z-0 pointer-events-none overflow-hidden">
+        <div className="absolute top-[-15%] left-[-10%] w-[60%] h-[60%] rounded-full bg-brand-primary/10 blur-[150px] animate-inferno" />
+        <div className="absolute bottom-[-15%] right-[-10%] w-[60%] h-[60%] rounded-full bg-brand-secondary/15 blur-[150px] animate-inferno" style={{ animationDelay: '-7s' }} />
+        <div className="absolute top-[20%] right-[10%] w-[40%] h-[40%] rounded-full bg-brand-primary/5 blur-[120px] animate-inferno" style={{ animationDelay: '-12s' }} />
+        
+        {/* Subtle red sparks/particles could be added here if needed, but keeping it clean as requested */}
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,transparent_0%,rgba(0,0,0,0.4)_100%)]" />
       </div>
 
-      <div className="relative z-10 max-w-3xl mx-auto px-6 py-12 md:py-20">
-        {/* Header - Improved Logo */}
-        <header className="mb-12 text-center flex flex-col items-center">
+      <div className="relative z-10 max-w-3xl mx-auto px-6 py-12 md:py-16">
+        {/* Header - Devil Logo with Horns */}
+        <header className="mb-10 text-center flex flex-col items-center">
           <motion.div 
-            initial={{ opacity: 0, y: -20 }}
-            animate={{ opacity: 1, y: 0 }}
+            initial={{ opacity: 0, scale: 0.8 }}
+            animate={{ opacity: 1, scale: 1 }}
+            transition={{ duration: 0.8, ease: "easeOut" }}
             className="relative group cursor-default"
           >
+            {/* Horns SVG */}
+            <svg 
+              viewBox="0 0 100 100" 
+              className="absolute -top-12 left-1/2 -translate-x-1/2 w-28 h-28 text-brand-primary drop-shadow-[0_0_15px_rgba(220,38,38,0.8)] fill-current z-0 opacity-80"
+            >
+              <path d="M30,50 C20,30 10,20 5,10 C15,20 25,35 30,50 Z M70,50 C80,30 90,20 95,10 C85,20 75,35 70,50 Z" />
+            </svg>
+
             {/* Glow effect */}
-            <div className="absolute inset-0 bg-brand-primary/20 blur-3xl group-hover:bg-brand-primary/30 transition-colors duration-700" />
+            <div className="absolute inset-0 bg-brand-primary/30 blur-3xl group-hover:bg-brand-primary/50 transition-colors duration-700" />
             
-            <div className="relative flex items-center justify-center w-24 h-24 bg-slate-900 border border-white/5 rounded-[2rem] shadow-2xl group-hover:border-brand-primary/30 transition-all duration-500 overflow-hidden">
-              {/* Inner gradient */}
-              <div className="absolute inset-0 bg-gradient-to-br from-brand-primary/10 via-transparent to-brand-secondary/10 opacity-0 group-hover:opacity-100 transition-opacity duration-500" />
+            <div className="relative flex items-center justify-center w-28 h-28 bg-black border border-brand-primary/20 rounded-[2.5rem] shadow-[0_0_50px_rgba(220,38,38,0.2)] group-hover:border-brand-primary/50 transition-all duration-700 overflow-hidden">
+              {/* Inner hell gradient */}
+              <div className="absolute inset-0 bg-gradient-to-br from-brand-primary/20 via-transparent to-black opacity-40 group-hover:opacity-100 transition-opacity duration-700" />
               
-              <div className="relative">
-                <FileArchive className="w-10 h-10 text-brand-primary mb-1 transform group-hover:-translate-y-1 transition-transform duration-500" />
-                <div className="absolute -bottom-1 -right-1">
-                  <ShieldCheck className="w-5 h-5 text-brand-secondary fill-slate-900 group-hover:scale-110 transition-transform duration-500" />
+              <div className="relative flex flex-col items-center">
+                <Skull className="w-12 h-12 text-brand-primary drop-shadow-[0_0_10px_rgba(220,38,38,0.5)] transform group-hover:scale-110 transition-transform duration-700" />
+                <div className="absolute -bottom-2">
+                  <Flame className="w-6 h-6 text-orange-500 animate-pulse" />
                 </div>
               </div>
             </div>
 
+            <motion.h1 
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.5 }}
+              className="mt-6 text-5xl font-display text-brand-primary tracking-widest drop-shadow-[0_0_15px_rgba(220,38,38,0.5)] uppercase"
+            >
+              DEVIL
+            </motion.h1>
+
             {/* Accent lines */}
-            <div className="absolute -bottom-4 left-1/2 -translate-x-1/2 w-12 h-1 bg-gradient-to-r from-transparent via-brand-primary to-transparent rounded-full opacity-50" />
+            <div className="absolute -bottom-8 left-1/2 -translate-x-1/2 w-24 h-[2px] bg-gradient-to-r from-transparent via-brand-primary to-transparent rounded-full opacity-60" />
           </motion.div>
         </header>
 
         {/* Main Card */}
         <motion.div 
-          initial={{ opacity: 0, y: 20 }}
+          initial={{ opacity: 0, y: 30 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.3 }}
-          className="bg-slate-800/40 backdrop-blur-xl border border-white/10 rounded-[2.5rem] shadow-2xl overflow-hidden"
+          transition={{ delay: 0.4, type: "spring", stiffness: 50 }}
+          className="bg-black/60 backdrop-blur-2xl border border-white/5 rounded-[3rem] shadow-[0_30px_100px_rgba(0,0,0,0.8)] overflow-hidden"
         >
           {/* Auth Section */}
-          <div className="p-8 border-b border-white/5 bg-white/5">
+          <div className="p-8 border-b border-white/5 bg-brand-primary/5">
             <div className="flex flex-col sm:flex-row items-center justify-between gap-4">
               <div className="flex items-center gap-4">
                 <div className="relative">
-                  <div className={`w-3 h-3 rounded-full ${accessToken ? 'bg-green-400' : 'bg-slate-600'}`} />
-                  {accessToken && <div className="absolute inset-0 w-3 h-3 rounded-full bg-green-400 animate-ping opacity-75" />}
+                  <div className={`w-3 h-3 rounded-full ${accessToken ? 'bg-red-500' : 'bg-slate-700'}`} />
+                  {accessToken && <div className="absolute inset-0 w-3 h-3 rounded-full bg-red-500 animate-ping opacity-75" />}
                 </div>
-                <span className="text-sm font-semibold tracking-wide text-slate-300">
-                  {accessToken ? 'اتصال به درایو برقرار است' : 'گوگل درایو متصل نیست'}
+                <span className="text-sm font-semibold tracking-wide text-slate-400">
+                  {accessToken ? 'اتصال به گوگل درایو برقرار است' : 'گوگل درایو متصل نیست'}
                 </span>
               </div>
               
@@ -308,49 +349,50 @@ export default function App() {
                         <Video className="w-4 h-4 text-brand-primary" />
                       </div>
                       <div className="flex flex-col">
-                        <span className="text-[11px] font-bold text-slate-200">SaveTheVideo</span>
+                        <span className="text-[11px] font-bold text-slate-300">SaveTheVideo</span>
                         <div className="flex items-center gap-1.5 mt-0.5">
-                          <span className="text-[9px] text-slate-500">استخراج لینک پورن‌هاب</span>
-                          <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shadow-[0_0_5px_rgba(251,191,36,0.5)]" />
-                          <span className="text-[9px] text-amber-200/70 font-medium">متوسط</span>
+                          <span className="text-[9px] text-slate-500">استخراج لینک از بیشتر سایت‌ها</span>
+                          <span className="w-1.5 h-1.5 rounded-full bg-red-600 shadow-[0_0_5px_rgba(220,38,38,0.5)]" />
+                          <span className="text-[9px] text-red-500/70 font-medium">قدرتمند</span>
                         </div>
                       </div>
                     </div>
-                    <ArrowUpRight className="w-3 h-3 text-slate-600 group-hover:text-brand-primary transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-all" />
+                    <ArrowUpRight className="w-3 h-3 text-slate-700 group-hover:text-brand-primary transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-all" />
                   </a>
 
                   <a 
                     href="https://pornhubfans.com/" 
                     target="_blank" 
                     rel="noopener noreferrer"
-                    className="flex items-center justify-between p-3 bg-slate-900/50 border border-white/5 rounded-xl hover:border-brand-secondary/30 hover:bg-slate-800/80 transition-all group"
+                    className="flex items-center justify-between p-3 bg-black/40 border border-white/5 rounded-xl hover:border-brand-primary/30 hover:bg-black/60 transition-all group"
                   >
                     <div className="flex items-center gap-3">
-                      <div className="p-2 bg-slate-800 rounded-lg group-hover:scale-110 transition-transform">
-                        <Video className="w-4 h-4 text-brand-secondary" />
+                      <div className="p-2 bg-brand-primary/10 rounded-lg group-hover:scale-110 transition-transform">
+                        <Flame className="w-4 h-4 text-brand-primary" />
                       </div>
                       <div className="flex flex-col">
-                        <span className="text-[11px] font-bold text-slate-200">PornhubFans</span>
+                        <span className="text-[11px] font-bold text-slate-300">PornhubFans</span>
                         <div className="flex items-center gap-1.5 mt-0.5">
-                          <span className="text-[9px] text-slate-500">استخراج لینک پورن‌هاب</span>
-                          <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shadow-[0_0_5px_rgba(251,191,36,0.5)]" />
-                          <span className="text-[9px] text-amber-200/70 font-medium">متوسط</span>
+                          <span className="text-[9px] text-slate-500">استخراج از پورن‌هاب</span>
+                          <span className="w-1.5 h-1.5 rounded-full bg-red-600 shadow-[0_0_5px_rgba(220,38,38,0.5)]" />
+                          <span className="text-[9px] text-red-500/70 font-medium">سریع</span>
                         </div>
                       </div>
                     </div>
-                    <ArrowUpRight className="w-3 h-3 text-slate-600 group-hover:text-brand-secondary transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-all" />
+                    <ArrowUpRight className="w-3 h-3 text-slate-700 group-hover:text-brand-primary transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5 transition-all" />
                   </a>
                 </div>
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-4 flex justify-between items-center">
+                <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-4 flex justify-between items-center">
                   <div className="flex items-center gap-2">
+                    <Flame className="w-3 h-3 text-brand-primary" />
                     <span>لینک‌های ویدیو 🔗</span>
                   </div>
                   <button 
                     onClick={addUrlField}
-                    className="text-[10px] bg-white/5 hover:bg-white/10 text-slate-300 px-3 py-1 rounded-lg border border-white/10 transition-colors"
+                    className="text-[10px] bg-brand-primary/10 hover:bg-brand-primary/20 text-brand-primary px-3 py-1 rounded-lg border border-brand-primary/20 transition-colors"
                   >
                     + افزودن لینک جدید
                   </button>
@@ -390,8 +432,8 @@ export default function App() {
                   </AnimatePresence>
                 </div>
 
-                <div className="mt-4 p-4 bg-brand-primary/10 rounded-2xl border border-brand-primary/20">
-                  <p className="text-xs text-indigo-300 leading-relaxed text-center">
+                <div className="mt-4 p-4 bg-brand-primary/5 rounded-2xl border border-brand-primary/10">
+                  <p className="text-xs text-brand-primary/70 leading-relaxed text-center font-medium">
                     تمامی ویدیوها مستقیماً و با بالاترین سرعت ممکن به گوگل درایو شما منتقل می‌شوند.
                   </p>
                 </div>
@@ -452,25 +494,29 @@ export default function App() {
                           </div>
                         </div>
 
-                        {job.status === 'loading' && (
+                        {(job.status === 'loading' || job.status === 'paused') && (
                           <div className="space-y-3">
                             <div className="flex items-center justify-between text-[10px] text-slate-400 mb-1">
                               <span>وضعیت: {job.message}</span>
                               <div className="flex gap-2">
+                                {job.status === 'loading' && (
+                                  <button
+                                    onClick={() => handleJobControl(job.id, 'pause')}
+                                    className="hover:text-white transition-colors underline"
+                                  >
+                                    توقف
+                                  </button>
+                                )}
+                                {job.status === 'paused' && (
+                                  <button
+                                    onClick={() => handleJobControl(job.id, 'resume')}
+                                    className="hover:text-white transition-colors underline"
+                                  >
+                                    ادامه
+                                  </button>
+                                )}
                                 <button
-                                  onClick={() => fetch(`/api/job-control/${job.id}`, { method: 'POST', body: JSON.stringify({ action: 'pause' }), headers: {'Content-Type': 'application/json'} })}
-                                  className="hover:text-white transition-colors underline"
-                                >
-                                  توقف
-                                </button>
-                                <button
-                                  onClick={() => fetch(`/api/job-control/${job.id}`, { method: 'POST', body: JSON.stringify({ action: 'resume' }), headers: {'Content-Type': 'application/json'} })}
-                                  className="hover:text-white transition-colors underline"
-                                >
-                                  ادامه
-                                </button>
-                                <button
-                                  onClick={() => fetch(`/api/job-control/${job.id}`, { method: 'POST', body: JSON.stringify({ action: 'cancel' }), headers: {'Content-Type': 'application/json'} })}
+                                  onClick={() => handleJobControl(job.id, 'cancel')}
                                   className="hover:text-red-400 transition-colors underline"
                                 >
                                   لغو
@@ -517,13 +563,13 @@ export default function App() {
           </div>
 
           {/* Footer Info */}
-          <div className="px-10 py-8 bg-slate-900/30 border-t border-white/5 flex flex-col md:flex-row items-center justify-between gap-4 text-xs font-mono text-slate-500 uppercase tracking-widest">
+          <div className="px-10 py-8 bg-black/60 border-t border-white/5 flex flex-col md:flex-row items-center justify-between gap-4 text-xs font-mono text-slate-600 uppercase tracking-widest">
             <div className="flex items-center gap-3">
-              <ShieldCheck className="w-5 h-5 text-slate-600" />
+              <ShieldCheck className="w-5 h-5 text-brand-primary/50" />
               <span>پردازش امن و رمزنگاری شده</span>
             </div>
             <div className="flex items-center gap-2">
-              <span className="opacity-50" dir="ltr">v1.2.0</span>
+              <span className="opacity-40" dir="ltr">v1.2.0</span>
             </div>
           </div>
         </motion.div>
@@ -533,11 +579,11 @@ export default function App() {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ delay: 0.5 }}
-          className="mt-12 p-8 bg-slate-800/20 backdrop-blur-sm border border-white/5 rounded-[2rem]"
+          className="mt-12 p-8 bg-black/40 backdrop-blur-sm border border-brand-primary/10 rounded-[2.5rem]"
         >
           <div className="flex items-center gap-3 mb-6">
-            <div className="w-10 h-10 bg-slate-700/50 rounded-xl flex items-center justify-center">
-              <ShieldCheck className="w-5 h-5 text-indigo-400" />
+            <div className="w-10 h-10 bg-brand-primary/10 rounded-xl flex items-center justify-center">
+              <ShieldCheck className="w-5 h-5 text-brand-primary" />
             </div>
             <h3 className="text-lg font-bold text-slate-200">
               تنظیمات API
@@ -587,10 +633,10 @@ export default function App() {
         </motion.div>
 
         <footer className="mt-16 text-center">
-          <p className="text-xs font-mono text-slate-600 uppercase tracking-[0.2em] mb-2 font-bold" dir="ltr">
-            © 2026 Drive Video Zipper
+          <p className="text-xs font-mono text-brand-primary opacity-60 uppercase tracking-[0.4em] mb-3 font-bold" dir="ltr">
+            © 2026 DEVIL.INC
           </p>
-          <div className="w-12 h-1 bg-gradient-to-r from-brand-primary to-brand-secondary mx-auto rounded-full opacity-50" />
+          <div className="w-24 h-[1px] bg-gradient-to-r from-transparent via-brand-primary to-transparent mx-auto rounded-full" />
         </footer>
       </div>
     </div>
